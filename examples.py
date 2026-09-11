@@ -1,0 +1,163 @@
+"""examples.py -- runs every example and benchmark of
+
+    Parallel Integration over Simple Radical Extensions II: Mixed Towers
+
+through the merged pipeline parallel_mixed.py, in the order of Section 10,
+followed by the two boundary sessions of Section 11.  Each case records the
+outcome the paper claims (an elementary integral, a non-elementarity
+certificate, or an honest 'failed'); every returned integral is checked once
+more here by differentiating the surface expression where one is supplied.
+
+    python examples.py            # everything (~6 minutes; Guenther dominates)
+    QUICK=1 python examples.py    # skip the two slowest benchmarks
+"""
+import os, sys, time
+import sympy as sp
+from parallel_mixed import Tower, parallel_integrate_mixed as PIM
+
+x, t, u = sp.symbols('x t u', positive=True)
+S = sp.S
+q = x**2 + 1
+QUICK = os.environ.get('QUICK') == '1'
+results = []
+
+
+def check_integral(I, surface_f, subs, var):
+    """verify D(I) = f on the surface, after substituting the tower generators."""
+    Is = I.subs(subs)
+    for pt in (sp.Rational(3, 2), 2, sp.Rational(7, 3)):
+        v = sp.N((sp.diff(Is, var) - surface_f).subs(var, pt), 30)
+        if abs(complex(v)) > 1e-20:
+            return False
+    return True
+
+
+def run(label, f, T, expect, surface=None, subs=None, var=x, verbose=False, slow=False):
+    """expect: 'integral' | 'not elementary' | 'failed'"""
+    if slow and QUICK:
+        print(f"[{label}] skipped (QUICK)"); return
+    print(f"\n### {label}")
+    t0 = time.time()
+    r = PIM(f, T, verbose=verbose)
+    dt = time.time() - t0
+    if expect == 'integral':
+        ok = isinstance(r, sp.Basic)
+        if ok and surface is not None:
+            ok = check_integral(r, surface, subs or {}, var)
+        print(str(r)[:300] + (' ...' if len(str(r)) > 300 else ''))
+    else:
+        ok = isinstance(r, tuple) and str(r[0]).startswith(expect)
+        print(r)
+    results.append((label, expect, ok, dt))
+    print(f"--> {'PASS' if ok else 'FAIL'}  ({dt:.1f}s)")
+
+
+# ================================================================ Section 10
+ys = sp.sqrt(q)                                   # y over the flagship curve
+tl = sp.log(x + ys)                               # t = log(x + y)
+
+run("10.1 flagship: int log(x+sqrt(x^2+1))", (t, 0),
+    Tower([x, t], [(1, 0), (0, 1/q)], q=q),
+    'integral', surface=tl, subs={t: tl})
+
+run("10.2 irreplaceable unit (t = exp y)", (0, (1 + x*t)/q),
+    Tower([x, t], [(1, 0), (0, x*t/q)], q=q),
+    'integral', surface=(1 + x*sp.exp(ys))/ys, subs={t: sp.exp(ys)})
+
+run("10.3 moving prime: not elementary", (1/(x*t), 0),
+    Tower([x, t], [(1, 0), (0, 1/q)], q=q), 'not elementary', verbose=True)
+
+run("10.4 Bronstein (E): not elementary", (t**2/(1 + t**2), 1/(1 + t**2)),
+    Tower([x, t], [(1, 0), (1/(2*x*t), 0)], q=t**2 + t), 'not elementary', verbose=True)
+
+run("10.5 exp(sqrt x) (flattened)", (t, 0),
+    Tower([u, t], [(1/(2*u), 0), (t/(2*u), 0)]), 'integral',
+    surface=sp.exp(sp.sqrt(x)), subs={u: sp.sqrt(x), t: sp.exp(sp.sqrt(x))})
+
+run("10.6 tan(sqrt x)/sqrt x (flattened)", (t/u, 0),
+    Tower([u, t], [(1/(2*u), 0), ((1 + t**2)/(2*u), 0)]), 'integral',
+    surface=sp.tan(sp.sqrt(x))/sp.sqrt(x), subs={u: sp.sqrt(x), t: sp.tan(sp.sqrt(x))}, verbose=True)
+
+run("10.7 tan over the curve (elementary instance)", (x*(1 + t**2), 3*x*t/q),
+    Tower([x, t], [(1, 0), (0, x*(1 + t**2)/q)], q=q), 'integral',
+    surface=x*(1 + sp.tan(ys)**2) + 3*x*sp.tan(ys)/ys, subs={t: sp.tan(ys)})
+# 10.7, non-elementary instance: rests on the residue at v_inf (milestone ii);
+# the pipeline cannot certify it and reports 'failed', as the paper states.
+run("10.7 int tan(sqrt(x^2+1)) dx: expected 'failed' (milestone ii)", (t, 0),
+    Tower([x, t], [(1, 0), (0, x*(1 + t**2)/q)], q=q), 'failed')
+
+run("10.8 curve-split moving logands",
+    (-(1 + 5*x)/(t**2 - x**2 - 1), (t**3 + (4 + x - x**2)*t)/(q*(t**2 - x**2 - 1))),
+    Tower([x, t], [(1, 0), (0, 1/q)], q=q), 'integral',
+    surface=(tl**3 + (4 + x - x**2)*tl - (1 + 5*x)*ys)/(ys*(tl**2 - x**2 - 1)),
+    subs={t: tl}, verbose=True)
+
+u14 = sp.sqrt(x + sp.log(x))
+run("10.9 tutorial Ex 14 (flattened)", ((x + 1)/(x*u) + (2*x*u + x + 1)/(x*u*(x + u)), 0),
+    Tower([x, u], [(1, 0), ((x + 1)/(2*x*u), 0)]), 'integral',
+    surface=((x**2 + 2*x + 1)*u14 + (3*x + 1)*sp.log(x) + 3*x**2 + x)/((x*sp.log(x) + x**2)*u14 + x**2*sp.log(x) + x**3),
+    subs={u: u14})
+
+u15 = (x + sp.exp(x))**sp.Rational(1, 3)
+run("10.10 tutorial Ex 15 (flattened)", (((2*x**2 + 3*x)*u**3 + 3*u + 2*x**2 - 2*x**3)/(x*u), 0),
+    Tower([x, u], [(1, 0), ((u**3 - x + 1)/(3*u**2), 0)]), 'integral',
+    surface=(3*u15 + (2*x**2 + 3*x)*sp.exp(x) + 5*x**2)/(x*u15), subs={u: u15})
+
+q71 = x**4 + 10*x**2 - 96*x - 71
+run("10.11 Cohen 1993", (0, x/q71), Tower([x], [(S(1), S(0))], q=q71),
+    'integral', surface=x/sp.sqrt(q71), verbose=True)
+
+q6 = x**6 + 4*x**5 + 6*x**4 - 12*x**3 + 33*x**2 - 16*x
+run("10.12 Schultz 2015 (genus 2)", (0, (29*x**2 + 18*x - 3)/q6),
+    Tower([x], [(S(1), S(0))], q=q6), 'integral',
+    surface=(29*x**2 + 18*x - 3)/sp.sqrt(q6), verbose=True)
+
+q3 = x**3 + 1
+y3 = sp.sqrt(q3)
+run("10.13 Bronstein ISSAC'91", ((5*x**4 + 2*x - 2)*t/x**2, (5*x**4 + x**3 + 2*x - 2)*t/(x**2*q3)),
+    Tower([x, t], [(1, 0), (0, t*(5*x**3 + 2)/(2*q3))], q=q3), 'integral',
+    surface=(((5*x**4 + 2*x - 2)/x**2)*(1 + 1/y3) + x/y3)*sp.exp(x*y3),
+    subs={t: sp.exp(x*y3)}, verbose=True)
+
+q4 = x**4 + 4*x**3 + 2*x**2 + 1
+N4 = 2*x**6 + 4*x**5 + 7*x**4 - 3*x**3 - x**2 - 8*x - 8
+run("10.14 Chebyshev (Davenport Ex. 5)", (0, N4/((2*x**2 - 1)**2*q4)),
+    Tower([x], [(S(1), S(0))], q=q4), 'integral',
+    surface=N4/((2*x**2 - 1)**2*sp.sqrt(q4)), verbose=True, slow=True)
+
+run("10.15 Guenther 1882 (order-6 torsion)", (0, x/((x**3 + 8)*(x**3 - 1))),
+    Tower([x], [(S(1), S(0))], q=x**3 - 1), 'integral',
+    surface=x/((x**3 + 8)*sp.sqrt(x**3 - 1)), verbose=True, slow=True)
+
+qt = t**2 + 1
+yt = sp.sqrt(sp.log(x)**2 + 1)
+run("10.16 torus over the logarithmic tower", (S(5)/(2*x*t), (4*t**3 + 3*t + 1)/(2*x*t*qt)),
+    Tower([x, t], [(1, 0), (1/x, 0)], q=qt), 'integral',
+    surface=(4*sp.log(x)**3 + 3*sp.log(x) + 1 + 5*yt)/(2*x*sp.log(x)*yt),
+    subs={t: sp.log(x)}, verbose=True)
+
+# ================================================================ Section 11
+run("11 certified: dx/((x-2) sqrt(x^3+1)) (holomorphic remainder)", (0, 1/((x - 2)*q3)),
+    Tower([x], [(S(1), S(0))], q=q3), 'not elementary', verbose=True)
+
+run("11 honest failure: Cohen's -72 variant", (0, x/(x**4 + 10*x**2 - 96*x - 72)),
+    Tower([x], [(S(1), S(0))], q=x**4 + 10*x**2 - 96*x - 72), 'failed')
+
+# ================================================================ summary
+print("\n" + "=" * 78)
+w = max(len(r[0]) for r in results)
+for label, expect, ok, dt in results:
+    print(f"{label:<{w}}  {expect:<15} {'PASS' if ok else 'FAIL'}  {dt:6.1f}s")
+print("=" * 78)
+nfail = sum(1 for r in results if not r[2])
+print(f"{len(results) - nfail}/{len(results)} passed")
+sys.exit(1 if nfail else 0)
+
+# Bronstein 1990, pp. 134 and 147 (same flattenable curve as tutorial Ex 14)
+Tj = Tower([x, u], [(1, 0), ((x+1)/(2*x*u), 0)])
+run("JSC90 p.134", ((x+1)/(x*u**3), 0), Tj, verbose=True)
+run("JSC90 p.147 as printed (x^2+x+1): not elementary",
+    (sp.cancel(((x**2+x+1)*u + (3*x+1)*(u**2-x) + 3*x**2 + x)
+               / ((x*(u**2-x)+x**2)*u + x**2*(u**2-x) + x**3)), 0), Tj, verbose=True)
+run("JSC90 p.147, correct integrand in lowest terms: ((x+1)^2 + (3x+1)u)/(x u (u+x))",
+    (sp.cancel(((x+1)**2 + (3*x+1)*u)/(x*u*(u+x))), 0), Tj, verbose=True)
