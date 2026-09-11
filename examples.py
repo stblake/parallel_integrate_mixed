@@ -3,7 +3,8 @@
     Parallel Integration over Simple Radical Extensions II: Mixed Towers
 
 through the merged pipeline parallel_mixed.py, in the order of Section 10,
-followed by the two boundary sessions of Section 11.  Each case records the
+followed by the two certificate sessions of Remark 9.1 / Proposition 9.2 and a
+few regressions not printed in the paper.  Each case records the
 outcome the paper claims (an elementary integral, a non-elementarity
 certificate, or an honest 'failed'); every returned integral is checked once
 more here by differentiating the surface expression where one is supplied.
@@ -103,45 +104,60 @@ run("10.10 tutorial Ex 15 (flattened)", (((2*x**2 + 3*x)*u**3 + 3*u + 2*x**2 - 2
     Tower([x, u], [(1, 0), ((u**3 - x + 1)/(3*u**2), 0)]), 'integral',
     surface=(3*u15 + (2*x**2 + 3*x)*sp.exp(x) + 5*x**2)/(x*u15), subs={u: u15})
 
+
+# 10.11 Bronstein 1990, pp. 134 and 147 (same flattenable curve as Ex 14)
+Tj = Tower([x, u], [(1, 0), ((x + 1)/(2*x*u), 0)])
+run("10.11 JSC90 p.134: (x+1)/((x log x + x^2) sqrt(x+log x))", ((x + 1)/(x*u**3), 0), Tj,
+    'integral', surface=(x + 1)/((x*sp.log(x) + x**2)*u14), subs={u: u14}, verbose=True)
+run("10.11 JSC90 p.147 as printed (x^2+x+1): not elementary",
+    (sp.cancel(((x**2 + x + 1)*u + (3*x + 1)*(u**2 - x) + 3*x**2 + x)
+               / ((x*(u**2 - x) + x**2)*u + x**2*(u**2 - x) + x**3)), 0), Tj,
+    'not elementary', verbose=True)
+run("10.11 JSC90 p.147 corrected, lowest terms: ((x+1)^2 + (3x+1)u)/(x u (u+x))",
+    (sp.cancel(((x + 1)**2 + (3*x + 1)*u)/(x*u*(u + x))), 0), Tj, 'integral',
+    surface=((x + 1)**2 + (3*x + 1)*u14)/(x*u14*(u14 + x)), subs={u: u14}, verbose=True)
+
 q71 = x**4 + 10*x**2 - 96*x - 71
-run("10.11 Cohen 1993", (0, x/q71), Tower([x], [(S(1), S(0))], q=q71),
+run("10.12 Cohen 1993", (0, x/q71), Tower([x], [(S(1), S(0))], q=q71),
     'integral', surface=x/sp.sqrt(q71), verbose=True)
 
 q6 = x**6 + 4*x**5 + 6*x**4 - 12*x**3 + 33*x**2 - 16*x
-run("10.12 Schultz 2015 (genus 2)", (0, (29*x**2 + 18*x - 3)/q6),
+run("10.13 Schultz 2015 (genus 2)", (0, (29*x**2 + 18*x - 3)/q6),
     Tower([x], [(S(1), S(0))], q=q6), 'integral',
     surface=(29*x**2 + 18*x - 3)/sp.sqrt(q6), verbose=True)
 
 q3 = x**3 + 1
 y3 = sp.sqrt(q3)
-run("10.13 Bronstein ISSAC'91", ((5*x**4 + 2*x - 2)*t/x**2, (5*x**4 + x**3 + 2*x - 2)*t/(x**2*q3)),
+run("10.14 Bronstein ISSAC'91", ((5*x**4 + 2*x - 2)*t/x**2, (5*x**4 + x**3 + 2*x - 2)*t/(x**2*q3)),
     Tower([x, t], [(1, 0), (0, t*(5*x**3 + 2)/(2*q3))], q=q3), 'integral',
     surface=(((5*x**4 + 2*x - 2)/x**2)*(1 + 1/y3) + x/y3)*sp.exp(x*y3),
     subs={t: sp.exp(x*y3)}, verbose=True)
 
 q4 = x**4 + 4*x**3 + 2*x**2 + 1
 N4 = 2*x**6 + 4*x**5 + 7*x**4 - 3*x**3 - x**2 - 8*x - 8
-run("10.14 Chebyshev (Davenport Ex. 5)", (0, N4/((2*x**2 - 1)**2*q4)),
+run("10.15 Chebyshev (Davenport Ex. 5)", (0, N4/((2*x**2 - 1)**2*q4)),
     Tower([x], [(S(1), S(0))], q=q4), 'integral',
     surface=N4/((2*x**2 - 1)**2*sp.sqrt(q4)), verbose=True, slow=True)
 
-run("10.15 Guenther 1882 (order-6 torsion)", (0, x/((x**3 + 8)*(x**3 - 1))),
+run("10.16 Guenther 1882 (order-6 torsion)", (0, x/((x**3 + 8)*(x**3 - 1))),
     Tower([x], [(S(1), S(0))], q=x**3 - 1), 'integral',
     surface=x/((x**3 + 8)*sp.sqrt(x**3 - 1)), verbose=True, slow=True)
 
+# ============================================== certificates (Remark 9.1, Prop. 9.2)
+run("9.2(b) certified: dx/((x-2) sqrt(x^3+1)) (holomorphic remainder)", (0, 1/((x - 2)*q3)),
+    Tower([x], [(S(1), S(0))], q=q3), 'not elementary', verbose=True)
+
+run("honest failure: Cohen's -72 variant", (0, x/(x**4 + 10*x**2 - 96*x - 72)),
+    Tower([x], [(S(1), S(0))], q=x**4 + 10*x**2 - 96*x - 72), 'failed')
+
+# ============================================== regressions not printed in the paper
 qt = t**2 + 1
 yt = sp.sqrt(sp.log(x)**2 + 1)
-run("10.16 torus over the logarithmic tower", (S(5)/(2*x*t), (4*t**3 + 3*t + 1)/(2*x*t*qt)),
+run("regression (not in paper): torus over the logarithmic tower", (S(5)/(2*x*t), (4*t**3 + 3*t + 1)/(2*x*t*qt)),
     Tower([x, t], [(1, 0), (1/x, 0)], q=qt), 'integral',
     surface=(4*sp.log(x)**3 + 3*sp.log(x) + 1 + 5*yt)/(2*x*sp.log(x)*yt),
     subs={t: sp.log(x)}, verbose=True)
 
-# ================================================================ Section 11
-run("11 certified: dx/((x-2) sqrt(x^3+1)) (holomorphic remainder)", (0, 1/((x - 2)*q3)),
-    Tower([x], [(S(1), S(0))], q=q3), 'not elementary', verbose=True)
-
-run("11 honest failure: Cohen's -72 variant", (0, x/(x**4 + 10*x**2 - 96*x - 72)),
-    Tower([x], [(S(1), S(0))], q=x**4 + 10*x**2 - 96*x - 72), 'failed')
 
 # ================================================================ summary
 print("\n" + "=" * 78)
@@ -152,12 +168,3 @@ print("=" * 78)
 nfail = sum(1 for r in results if not r[2])
 print(f"{len(results) - nfail}/{len(results)} passed")
 sys.exit(1 if nfail else 0)
-
-# Bronstein 1990, pp. 134 and 147 (same flattenable curve as tutorial Ex 14)
-Tj = Tower([x, u], [(1, 0), ((x+1)/(2*x*u), 0)])
-run("JSC90 p.134", ((x+1)/(x*u**3), 0), Tj, verbose=True)
-run("JSC90 p.147 as printed (x^2+x+1): not elementary",
-    (sp.cancel(((x**2+x+1)*u + (3*x+1)*(u**2-x) + 3*x**2 + x)
-               / ((x*(u**2-x)+x**2)*u + x**2*(u**2-x) + x**3)), 0), Tj, verbose=True)
-run("JSC90 p.147, correct integrand in lowest terms: ((x+1)^2 + (3x+1)u)/(x u (u+x))",
-    (sp.cancel(((x+1)**2 + (3*x+1)*u)/(x*u*(u+x))), 0), Tj, verbose=True)
