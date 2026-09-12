@@ -33,7 +33,7 @@ def _c(e):
     except Exception:
         return sp.cancel(e)
 from itertools import product as _iproduct
-from pell import fundamental_unit
+from pell import fundamental_unit, nontorsion_certificate
 try:                      # shared codebase with Parts I and III
     from weier import division_poly_order
     from rnrad2 import RadicalField, exact_degree_bounds
@@ -279,6 +279,12 @@ def _residue_free(T, g, Y):
         p = P_.as_expr()
         if not p.has(x):
             continue
+        # sub-critical poles carry no residue (Theorem 7.4(ii)); n = 1 with
+        # D = d/dx has delta = 1 at unramified and delta = e_P = 2 at branch
+        # primes, so only v_P(g) <= -delta_P needs an evaluation
+        branch = sp.gcd(sp.Poly(p, x), sp.Poly(q, x)).degree() > 0
+        if _vP(g, p, T, branch) > -(2 if branch else 1):
+            continue
         rd = sp.roots(sp.Poly(p, x))
         if sum(rd.values()) != sp.degree(p, x):
             return False
@@ -298,6 +304,36 @@ def _residue_free(T, g, Y):
                 if sp.simplify(res) != 0:
                     return False
     return True
+
+
+def _vinfty_residue(T, f, Y):
+    """Hypertangent top generator t, Dt = eta (1 + t^2): the place v_oo has
+    delta = 1 and uniformiser 1/t; for v_oo(f) = -1 the residue is
+    tau = -(lim f/t)/eta in kappa(v_oo) = K_{n-1}(y), returned as a pair.
+    None if the top generator is not hypertangent or v_oo(f) != -1."""
+    t = T.gens[-1]
+    a, b = T.derivs[-1]
+    ea, eb = sp.cancel(a / (1 + t ** 2)), sp.cancel(b / (1 + t ** 2))
+    if ea.has(t) or eb.has(t) or (ea == 0 and eb == 0):
+        return None
+    def vinf(c):
+        c = sp.cancel(c)
+        if c == 0:
+            return None
+        n, d = sp.fraction(c)
+        return sp.degree(d, t) - sp.degree(n, t)
+    vs = [v for v in (vinf(f[0]), vinf(f[1])) if v is not None]
+    if not vs or min(vs) != -1:
+        return None
+    def lead(c):
+        c = sp.cancel(c)
+        if c == 0 or vinf(c) != -1:
+            return sp.S(0)
+        n, d = sp.fraction(c)
+        return sp.cancel(sp.LC(n, t) / sp.LC(d, t))
+    cpair = (lead(f[0]), lead(f[1]))
+    tau = _pdiv(cpair, (ea, eb), T.q)
+    return (_c(-tau[0]), _c(-tau[1]))
 
 def _deep_residues(T, f, p, pts, Y):
     """Laurent residues at a delta = 1 normal prime with a pole of order
@@ -548,6 +584,18 @@ def parallel_integrate_mixed(f, T, bounds=None, extension=None, verbose=False):
         return ("needs torsion realisation (Parts I--II, milestone iii)",
                 torsion)
 
+    # residue at the hypertangent place at infinity (Lemma 8.1)
+    if q is not None and len(gens) >= 2:
+        tinf = _vinfty_residue(T, f, Y)
+        if tinf is not None:
+            if verbose:
+                print(f"  v_oo (hypertangent top): delta = 1, v_oo(f) = -1, "
+                      f"residue {tinf[0]} + ({tinf[1]})*y")
+            lower = [g for g in gens[:-1]]
+            nonconst = (_c(tinf[1]) != 0) or (_certify_nonconstant(tinf[0], lower) is True)
+            if nonconst:
+                return ("not elementary", "v_oo", tinf)
+
     # tower specials (Theorem 6.1): offered regardless of the integrand
     seen = {pp for pp, _ in unk_logs}
     cand = set()
@@ -583,7 +631,14 @@ def parallel_integrate_mixed(f, T, bounds=None, extension=None, verbose=False):
                         print(f"  unit candidate: A + B*y with "
                               f"deg_{g} B = {sp.degree(uu[1], g)}")
                 else:
-                    units_complete = False      # inconclusive height bound
+                    cert, data = nontorsion_certificate(q, g)
+                    if cert:
+                        if verbose:
+                            print(f"  unit search inconclusive; [oo+ - oo-] certified "
+                                  f"non-torsion by reduction mod p: {data}")
+                        units_complete = True   # no non-constant units exist
+                    else:
+                        units_complete = False  # inconclusive height bound
                 break
 
     # residual integrand

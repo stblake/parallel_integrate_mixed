@@ -9,7 +9,7 @@ outcome the paper claims (an elementary integral, a non-elementarity
 certificate, or an honest 'failed'); every returned integral is checked once
 more here by differentiating the surface expression where one is supplied.
 
-    python examples.py            # everything (~6 minutes; Guenther dominates)
+    python examples.py            # everything (~6 minutes; Günther dominates)
     QUICK=1 python examples.py    # skip the two slowest benchmarks
 """
 import os, sys, time
@@ -82,10 +82,9 @@ run("10.6 tan(sqrt x)/sqrt x (flattened)", (t/u, 0),
 run("10.7 tan over the curve (elementary instance)", (x*(1 + t**2), 3*x*t/q),
     Tower([x, t], [(1, 0), (0, x*(1 + t**2)/q)], q=q), 'integral',
     surface=x*(1 + sp.tan(ys)**2) + 3*x*sp.tan(ys)/ys, subs={t: sp.tan(ys)})
-# 10.7, non-elementary instance: rests on the residue at v_inf (milestone ii);
-# the pipeline cannot certify it and reports 'failed', as the paper states.
-run("10.7 int tan(sqrt(x^2+1)) dx: expected 'failed' (milestone ii)", (t, 0),
-    Tower([x, t], [(1, 0), (0, x*(1 + t**2)/q)], q=q), 'failed')
+# 10.7, non-elementary instance: certified by the residue -y/x at v_oo
+run("10.7 int tan(sqrt(x^2+1)) dx: not elementary (residue at v_oo)", (t, 0),
+    Tower([x, t], [(1, 0), (0, x*(1 + t**2)/q)], q=q), 'not elementary', verbose=True)
 
 run("10.8 curve-split moving logands",
     (-(1 + 5*x)/(t**2 - x**2 - 1), (t**3 + (4 + x - x**2)*t)/(q*(t**2 - x**2 - 1))),
@@ -139,7 +138,7 @@ run("10.15 Chebyshev (Davenport Ex. 5)", (0, N4/((2*x**2 - 1)**2*q4)),
     Tower([x], [(S(1), S(0))], q=q4), 'integral',
     surface=N4/((2*x**2 - 1)**2*sp.sqrt(q4)), verbose=True, slow=True)
 
-run("10.16 Guenther 1882 (order-6 torsion)", (0, x/((x**3 + 8)*(x**3 - 1))),
+run("10.16 Günther 1882 (order-6 torsion)", (0, x/((x**3 + 8)*(x**3 - 1))),
     Tower([x], [(S(1), S(0))], q=x**3 - 1), 'integral',
     surface=x/((x**3 + 8)*sp.sqrt(x**3 - 1)), verbose=True, slow=True)
 
@@ -147,8 +146,9 @@ run("10.16 Guenther 1882 (order-6 torsion)", (0, x/((x**3 + 8)*(x**3 - 1))),
 run("9.2(b) certified: dx/((x-2) sqrt(x^3+1)) (holomorphic remainder)", (0, 1/((x - 2)*q3)),
     Tower([x], [(S(1), S(0))], q=q3), 'not elementary', verbose=True)
 
-run("honest failure: Cohen's -72 variant", (0, x/(x**4 + 10*x**2 - 96*x - 72)),
-    Tower([x], [(S(1), S(0))], q=x**4 + 10*x**2 - 96*x - 72), 'failed')
+run("10.12 Cohen's -72 variant: not elementary (non-torsion mod p + exact bounds)",
+    (0, x/(x**4 + 10*x**2 - 96*x - 72)),
+    Tower([x], [(S(1), S(0))], q=x**4 + 10*x**2 - 96*x - 72), 'not elementary', verbose=True)
 
 # ============================================== regressions not printed in the paper
 qt = t**2 + 1
