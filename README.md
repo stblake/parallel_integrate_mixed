@@ -266,7 +266,7 @@ $N(x^2+2x\pm\sqrt q)=2x^2-1$, and an order-5 unit.
 
 ### 10.16 Günther's integral (1882)
 
-$$\int \frac{xdx}{(x^3+8)\sqrt{x^3-1}} = \frac{\sqrt3}{108}\log\!\left(\frac{(x^2+x+1)(x^2+10x-8)+3\sqrt3(x^2+2x)y}{(x^2+x+1)(x^2+10x-8)-3\sqrt3(x^2+2x)y}\right)-\frac1{27}\arctan\!\left(\frac{3y}{(x-1)^2}\right)+\frac1{54}\arctan\!\left(\frac{3(2+2x-x^2)y}{x^4-7x^3+3x^2+2x+10}\right),$$
+$$\int \frac{xdx}{(x^3+8)\sqrt{x^3-1}} = \frac{\sqrt3}{108}\log\left(\frac{(x^2+x+1)(x^2+10x-8)+3\sqrt3(x^2+2x)y}{(x^2+x+1)(x^2+10x-8)-3\sqrt3(x^2+2x)y}\right)-\frac1{27}\arctan\left(\frac{3y}{(x-1)^2}\right)+\frac1{54}\arctan\left(\frac{3(2+2x-x^2)y}{x^4-7x^3+3x^2+2x+10}\right),$$
 
 $y=\sqrt{x^3-1}$. Six places with pairwise distinct residues, each an
 order-6 torsion class on the CM curve $y^2=x^3-1$; realised by Miller
