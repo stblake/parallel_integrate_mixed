@@ -5,7 +5,7 @@ towers of elementary functions that contain a **simple radical** $y^m=q$ at
 any position — the setting of
 
 > S. Blake, *Parallel Integration over Simple Radical Extensions II: Mixed
-> Towers*, building on Part I, [arXiv:2608.29482](https://arxiv.org/abs/2608.29482).
+> Towers*
 
 Every example in the paper is computed by this code and verified by
 differentiation; `examples.py` reruns all of them and reports, for each, the
@@ -29,7 +29,7 @@ closure of the polynomial ring below the radical, on the explicit Trager
 basis), one global ansatz for the integral
 
 $$
-\int f\,dx \;=\; \frac{b}{s\,D_v}\;+\;\sum_i c_i\log u_i ,
+\int f dx = \frac{b}{sD_v}+\sum_i c_i\log u_i ,
 $$
 
 and one linear system. There is no integral-basis computation, no Puiseux
@@ -50,7 +50,7 @@ the code runs them:
    not a constant, the integral is **certified non-elementary**.
 4. **Realisation** of the residue divisor as logands: equal residues give a
    polynomial logand; residues split by the curve are realised by a norm
-   search $a^2-qb^2=c\,p^k$; the remaining cases are torsion on the curve,
+   search $a^2-qb^2=cp^k$; the remaining cases are torsion on the curve,
    handled for one-place elliptic curves by division polynomials and Miller
    functions.
 5. **Units** (logands invisible to residues), found by the continued
@@ -104,7 +104,7 @@ whose `derivs[i]` is $D(\text{gens}[i])$ as a pair. It returns one of
 ## Limitations
 
 * $m\le2$ and $q$ squarefree in the implementation; the paper's theory
-  covers general $m$ and $q=\prod Q_l^{\,l}$.
+  covers general $m$ and $q=\prod Q_l^{l}$.
 * Places are enumerated over primes of degree $\le4$ in one generator with
   constant coefficients (roots in radicals); residues at primes of higher
   degree, or with non-constant coefficients beyond the quadratic
@@ -133,7 +133,7 @@ the answer or certificate, and what the example exercises.
 
 ### 10.1 The flagship
 
-$$\int \log\bigl(x+\sqrt{x^2+1}\bigr)\,dx \;=\; x\log\bigl(x+\sqrt{x^2+1}\bigr)-\sqrt{x^2+1}.$$
+$$\int \log\bigl(x+\sqrt{x^2+1}\bigr)dx = x\log\bigl(x+\sqrt{x^2+1}\bigr)-\sqrt{x^2+1}.$$
 
 $y^2=x^2+1$, $t=\log(x+y)$, $Dt=1/y\notin K$: the smallest tower outside
 Part I. Single sub-critical branch pole, so $v$ is polynomial; one linear
@@ -141,7 +141,7 @@ block.
 
 ### 10.2 An irreplaceable unit
 
-$$\int \frac{1+x\,e^{\sqrt{x^2+1}}}{\sqrt{x^2+1}}\,dx \;=\; e^{\sqrt{x^2+1}}+\log\bigl(x+\sqrt{x^2+1}\bigr).$$
+$$\int \frac{1+xe^{\sqrt{x^2+1}}}{\sqrt{x^2+1}}dx = e^{\sqrt{x^2+1}}+\log\bigl(x+\sqrt{x^2+1}\bigr).$$
 
 $t=e^{y}$. The logand $x+y$ is a unit of $\mathcal O$: no residue sees it,
 so it is offered unconditionally and the linear system forces its
@@ -149,14 +149,14 @@ coefficient.
 
 ### 10.3 Non-elementarity at a moving prime
 
-$$\int \frac{dx}{x\,\log\bigl(x+\sqrt{x^2+1}\bigr)} \quad\text{is not elementary.}$$
+$$\int \frac{dx}{x\log\bigl(x+\sqrt{x^2+1}\bigr)} \quad\text{is not elementary.}$$
 
 The prime $(t)$ is *moving*; its residue $y/x$ is not a constant of the
 residue field $\mathrm{Frac}(\mathcal O)$ — the residue certificate.
 
 ### 10.4 A nested radical: Bronstein's Example (E)
 
-$$\int \frac{\log x+\sqrt{\log x+\sqrt{\log x}}}{1+\log x}\,dx \quad\text{is not elementary.}$$
+$$\int \frac{\log x+\sqrt{\log x+\sqrt{\log x}}}{1+\log x}dx \quad\text{is not elementary.}$$
 
 The inner root $t=\sqrt{\log x}$ flattens into the transcendence basis
 ($Dt=1/(2xt)$); the outer root becomes the single radical $y^2=t^2+t$. The
@@ -167,7 +167,7 @@ recovered from four residue evaluations.
 
 ### 10.5 A pure root flattens
 
-$$\int e^{\sqrt x}\,dx \;=\; 2\bigl(\sqrt x-1\bigr)e^{\sqrt x}.$$
+$$\int e^{\sqrt x}dx = 2\bigl(\sqrt x-1\bigr)e^{\sqrt x}.$$
 
 $u=\sqrt x$ is a pure root of a generator and absorbs into the basis; the
 computation is purely transcendental, with $\delta_{(u)}=2$ appearing as
@@ -175,27 +175,27 @@ the flattened image of the branch pole order.
 
 ### 10.6 A residue at the hypertangent place at infinity
 
-$$\int \frac{\tan\sqrt x}{\sqrt x}\,dx \;=\; \log\bigl(1+\tan^2\sqrt x\bigr).$$
+$$\int \frac{\tan\sqrt x}{\sqrt x}dx = \log\bigl(1+\tan^2\sqrt x\bigr).$$
 
 Flattened as in 10.5; the special logand $1+t^2$ of the hypertangent
 generator carries the integral.
 
 ### 10.7 Hypertangent over the curve
 
-$$\int \Bigl(x\bigl(1+\tan^2 y\bigr)+\frac{3x\tan y}{y}\Bigr)dx \;=\; y\tan y+\log\bigl(1+\tan^2 y\bigr),\qquad y=\sqrt{x^2+1}.$$
+$$\int \Bigl(x\bigl(1+\tan^2 y\bigr)+\frac{3x\tan y}{y}\Bigr)dx = y\tan y+\log\bigl(1+\tan^2 y\bigr),\qquad y=\sqrt{x^2+1}.$$
 
 $t=\tan y$ with $Dt=(x/y)(1+t^2)$: a hypertangent whose derivative passes
 through $y$. The algebraic rational part $yt$ comes out of the linear
 system. The companion instance
 
-$$\int \tan\sqrt{x^2+1}\,dx \quad\text{is not elementary:}$$
+$$\int \tan\sqrt{x^2+1}dx \quad\text{is not elementary:}$$
 
 the residue at the place $v_\infty$ of the hypertangent is $-y/x$, a
 non-constant.
 
 ### 10.8 Moving logands split by the curve
 
-$$\int \frac{t^3+(4+x-x^2)\,t-(1+5x)\,y}{y\,(t^2-x^2-1)}\,dx \;=\; \tfrac12 t^2+2\log(t-y)+3\log(t+y),\qquad y=\sqrt{x^2+1},\ t=\log(x+y).$$
+$$\int \frac{t^3+(4+x-x^2)t-(1+5x)y}{y(t^2-x^2-1)}dx = \tfrac12 t^2+2\log(t-y)+3\log(t+y),\qquad y=\sqrt{x^2+1},\ t=\log(x+y).$$
 
 The prime $t^2-x^2-1$ is irreducible over $K$ but splits over the curve into
 $(t-y)(t+y)$, with residues $2$ and $3$ on the two sheets — a logand that no
@@ -203,7 +203,7 @@ polynomial can realise, obtained from the $y$-split of the quadratic.
 
 ### 10.9 Bronstein's tutorial Example 14
 
-$$\int \frac{(x+1)^2\sqrt{x+\log x}+(3x+1)\log x+3x^2+x}{(x\log x+x^2)\sqrt{x+\log x}+x^2\log x+x^3}\,dx \;=\; 2\sqrt{x+\log x}+2\log\bigl(x+\sqrt{x+\log x}\bigr).$$
+$$\int \frac{(x+1)^2\sqrt{x+\log x}+(3x+1)\log x+3x^2+x}{(x\log x+x^2)\sqrt{x+\log x}+x^2\log x+x^3}dx = 2\sqrt{x+\log x}+2\log\bigl(x+\sqrt{x+\log x}\bigr).$$
 
 The showcase of the recursive algorithm (integral basis, resultant, Puiseux
 expansions, principality test, Risch differential equations) flattens: with
@@ -212,25 +212,25 @@ residue and one linear block.
 
 ### 10.10 Bronstein's tutorial Example 15
 
-$$\int \frac{3(x+e^x)^{1/3}+(2x^2+3x)e^x+5x^2}{x\,(x+e^x)^{1/3}}\,dx \;=\; 3x\,(x+e^x)^{2/3}+3\log x.$$
+$$\int \frac{3(x+e^x)^{1/3}+(2x^2+3x)e^x+5x^2}{x(x+e^x)^{1/3}}dx = 3x(x+e^x)^{2/3}+3\log x.$$
 
 Also flattens, with $u=(x+e^x)^{1/3}$; the first $m=3$ instance,
 $\delta_{(u)}=3$ matching $\delta_P=e_P=3$ of the unflattened curve.
 
 ### 10.11 Bronstein 1990, pp. 134 and 147
 
-$$\int \frac{(x+1)\,dx}{(x\log x+x^2)\sqrt{x+\log x}} \;=\; -\frac{2}{\sqrt{x+\log x}}$$
+$$\int \frac{(x+1)dx}{(x\log x+x^2)\sqrt{x+\log x}} = -\frac{2}{\sqrt{x+\log x}}$$
 
 is a pure Hermite computation. The p. 147 integrand is that of Example 14;
 **as printed** (coefficient $x^2+x+1$ instead of $(x+1)^2$) it is
 **not elementary** — its residue at $(u+x)$ is $2(2u^2-1)/(2u^2+u-1)$, a
 non-constant — while the corrected integrand, in lowest terms,
 
-$$\int \frac{(x+1)^2+(3x+1)\sqrt{x+\log x}}{x\sqrt{x+\log x}\,\bigl(x+\sqrt{x+\log x}\bigr)}\,dx \;=\; 2\sqrt{x+\log x}+2\log\bigl(x+\sqrt{x+\log x}\bigr).$$
+$$\int \frac{(x+1)^2+(3x+1)\sqrt{x+\log x}}{x\sqrt{x+\log x}\bigl(x+\sqrt{x+\log x}\bigr)}dx = 2\sqrt{x+\log x}+2\log\bigl(x+\sqrt{x+\log x}\bigr).$$
 
 ### 10.12 Cohen's pseudo-elliptic integral (1993)
 
-$$\int \frac{x\,dx}{\sqrt{x^4+10x^2-96x-71}} \;=\; \tfrac18\log\bigl(A+B\sqrt{x^4+10x^2-96x-71}\bigr),$$
+$$\int \frac{xdx}{\sqrt{x^4+10x^2-96x-71}} = \tfrac18\log\bigl(A+B\sqrt{x^4+10x^2-96x-71}\bigr),$$
 
 $A=x^8+20x^6-128x^5+54x^4-1408x^3+3124x^2+10001$,
 $B=x^6+15x^4-80x^3+27x^2-528x+781$. Every finite pole is sub-critical, so
@@ -242,14 +242,14 @@ rational integral.
 
 ### 10.13 Schultz's genus-2 integral (2015)
 
-$$\int \frac{(29x^2+18x-3)\,dx}{\sqrt{x^6+4x^5+6x^4-12x^3+33x^2-16x}} \;=\; \log\bigl(A+B\sqrt q\bigr),\qquad \deg A=29,\ \deg B=26,$$
+$$\int \frac{(29x^2+18x-3)dx}{\sqrt{x^6+4x^5+6x^4-12x^3+33x^2-16x}} = \log\bigl(A+B\sqrt q\bigr),\qquad \deg A=29,\ \deg B=26,$$
 
 again a pure unit, computed in a few seconds with coefficients matching
 Schultz's paper digit for digit (and correcting one misprint there).
 
 ### 10.14 Bronstein's Risch differential equation on an algebraic curve (ISSAC 1991)
 
-$$\int \Bigl(\frac{5x^4+2x-2}{x^2}\Bigl(1+\frac1{\sqrt{x^3+1}}\Bigr)+\frac{x}{\sqrt{x^3+1}}\Bigr)e^{x\sqrt{x^3+1}}\,dx \;=\; \frac2x\bigl(1+\sqrt{x^3+1}\bigr)e^{x\sqrt{x^3+1}}.$$
+$$\int \Bigl(\frac{5x^4+2x-2}{x^2}\Bigl(1+\frac1{\sqrt{x^3+1}}\Bigr)+\frac{x}{\sqrt{x^3+1}}\Bigr)e^{x\sqrt{x^3+1}}dx = \frac2x\bigl(1+\sqrt{x^3+1}\bigr)e^{x\sqrt{x^3+1}}.$$
 
 $t=e^{xy}$ over the elliptic curve $y^2=x^3+1$: the Risch differential
 equation of the recursive method is the $t^1$-block of the linear system;
@@ -257,7 +257,7 @@ the first benchmark with a Hermite part.
 
 ### 10.15 Chebyshev's integral (Davenport, Example 5)
 
-$$\int \frac{2x^6+4x^5+7x^4-3x^3-x^2-8x-8}{(2x^2-1)^2\sqrt{q}}\,dx \;=\; \frac{(2x+1)\sqrt q}{2(2x^2-1)}-\frac52\log\bigl(x^2+2x+\sqrt q\bigr)+\frac52\log\bigl(x^2+2x-\sqrt q\bigr)+\log\bigl(A+B\sqrt q\bigr),$$
+$$\int \frac{2x^6+4x^5+7x^4-3x^3-x^2-8x-8}{(2x^2-1)^2\sqrt{q}}dx = \frac{(2x+1)\sqrt q}{2(2x^2-1)}-\frac52\log\bigl(x^2+2x+\sqrt q\bigr)+\frac52\log\bigl(x^2+2x-\sqrt q\bigr)+\log\bigl(A+B\sqrt q\bigr),$$
 
 $q=x^4+4x^3+2x^2+1$, $A=x^5+7x^4+15x^3+9x^2+2$, $B=x^3+5x^2+6x$. The only
 benchmark exercising all three mechanisms at once: a Hermite part, residues
@@ -266,7 +266,7 @@ $N(x^2+2x\pm\sqrt q)=2x^2-1$, and an order-5 unit.
 
 ### 10.16 Günther's integral (1882)
 
-$$\int \frac{x\,dx}{(x^3+8)\sqrt{x^3-1}} \;=\; \frac{\sqrt3}{108}\log\!\left(\frac{(x^2+x+1)(x^2+10x-8)+3\sqrt3\,(x^2+2x)\,y}{(x^2+x+1)(x^2+10x-8)-3\sqrt3\,(x^2+2x)\,y}\right)-\frac1{27}\arctan\!\left(\frac{3y}{(x-1)^2}\right)+\frac1{54}\arctan\!\left(\frac{3(2+2x-x^2)\,y}{x^4-7x^3+3x^2+2x+10}\right),$$
+$$\int \frac{xdx}{(x^3+8)\sqrt{x^3-1}} = \frac{\sqrt3}{108}\log\!\left(\frac{(x^2+x+1)(x^2+10x-8)+3\sqrt3(x^2+2x)y}{(x^2+x+1)(x^2+10x-8)-3\sqrt3(x^2+2x)y}\right)-\frac1{27}\arctan\!\left(\frac{3y}{(x-1)^2}\right)+\frac1{54}\arctan\!\left(\frac{3(2+2x-x^2)y}{x^4-7x^3+3x^2+2x+10}\right),$$
 
 $y=\sqrt{x^3-1}$. Six places with pairwise distinct residues, each an
 order-6 torsion class on the CM curve $y^2=x^3-1$; realised by Miller
@@ -279,12 +279,12 @@ over conjugate pairs.
 $$\int \frac{dx}{(x-2)\sqrt{x^3+1}} \quad\text{is not elementary.}$$
 
 The residue divisor is $3$-torsion and is realised, yet the remainder is
-$\tfrac13\,dx/y$: with the exact bounds of Part I the linear system is
+$\tfrac13dx/y$: with the exact bounds of Part I the linear system is
 inconsistent — the holomorphic-remainder certificate.
 
 ### Regression (not in the paper): the torus over the logarithmic tower
 
-$$\int \frac{4\log^3x+3\log x+1+5\sqrt{\log^2x+1}}{2x\log x\,\sqrt{\log^2x+1}}\,dx \;=\; ty+\log(t+y)+2\log(t+1+y)+3\log(t+1-y),\qquad t=\log x,\ y=\sqrt{t^2+1}.$$
+$$\int \frac{4\log^3x+3\log x+1+5\sqrt{\log^2x+1}}{2x\log x\sqrt{\log^2x+1}}dx = ty+\log(t+y)+2\log(t+1+y)+3\log(t+1-y),\qquad t=\log x,\ y=\sqrt{t^2+1}.$$
 
 The curve $y^2=t^2+1$ over $t=\log x$ cannot be flattened; split residues
 $3,2$ are realised by the norm search ($N(t+1\mp y)=2t$) and the unit
