@@ -150,6 +150,16 @@ def _points_over(T, p):
             return pts
     return None
 
+def _iszero(v):
+    """Zero test that handles algebraic constants such as sqrt(-I), which
+    simplify alone does not canonicalise; symbolic expressions fall back
+    to simplify."""
+    v = sp.sympify(v)
+    if v.free_symbols:
+        return sp.simplify(v) == 0
+    return sp.simplify(sp.expand_complex(v)) == 0
+
+
 def _reduce_at(expr, pt, y_symbol):
     g, rho, yv = pt
     e = expr
@@ -162,8 +172,16 @@ def _resfmt(v):
 
 
 def _norm_search(q, p, g, kmax=2, dbmax=2):
-    """Find u = a + b*y with a^2 - q b^2 = c * p^k, small degrees (the
-    norm-search slice of milestone (iii); b normalised monic)."""
+    """First solution of _norm_search_all (kept for callers that want one)."""
+    for sol in _norm_search_all(q, p, g, kmax, dbmax):
+        return sol
+    return None
+
+
+def _norm_search_all(q, p, g, kmax=2, dbmax=2):
+    """Yield every u = a + b*y with a^2 - q b^2 = c * p^k of small degree
+    (b normalised monic).  Different solutions vanish on different subsets
+    of the places over p, so the realisation must try them all."""
     dq, dp = sp.degree(q, g), sp.degree(p, g)
     for k in range(1, kmax + 1):
         for db in range(0, dbmax + 1):
@@ -179,8 +197,7 @@ def _norm_search(q, p, g, kmax=2, dbmax=2):
             for s in sols:
                 aa, bb, cc = a.subs(s), b.subs(s), s.get(c, c)
                 if cc != 0 and aa.free_symbols <= {g} and cc.free_symbols == set():
-                    return sp.expand(aa), sp.expand(bb), cc, k
-    return None
+                    yield sp.expand(aa), sp.expand(bb), cc, k
 
 
 
@@ -191,12 +208,14 @@ def _vanish_order(T, u, pt, Y):
     if sp.sympify(rho).free_symbols or not T.q.free_symbols <= {g}:
         return 1
     e = sp.Dummy('e')
-    r = sp.sqrt(sp.factor(T.q.subs(g, rho)))
-    eps = sp.simplify(sp.cancel(yv / r)) if r != 0 else 1
+    r = sp.sqrt(T.q.subs(g, rho))
+    eps = 1 if _iszero(yv - r) else (-1 if _iszero(yv + r) else None)
+    if eps is None:
+        return 1
     ub = (u[0] + u[1] * eps * sp.sqrt(T.q.subs(g, rho + e))).subs(g, rho + e)
-    ser = sp.series(sp.expand(ub), e, 0, 8)
+    ser = sp.series(sp.expand(ub), e, 0, 8).removeO()
     k = 0
-    while sp.simplify(ser.coeff(e, k)) == 0 and k < 8:
+    while k < 8 and _iszero(ser.coeff(e, k)):
         k += 1
     return k
 
@@ -205,25 +224,26 @@ def _realise_points(T, p, pts, taus, Y, verbose=False):
     if all(tt == taus[0] for tt in taus):
         return [(taus[0], (p, sp.S(0)))] if taus[0] != 0 else []
     g = pts[0][0]
-    res = _norm_search(T.q, p, g)
-    if res is None:
-        return _torsion_realise(T, p, pts, taus, Y, verbose=verbose)
-    a, b, c, k = res
-    out = []
-    for sg in (1, -1):
-        uu = (a, sg * b)
-        hits = [(pt, tt) for pt, tt in zip(pts, taus)
-                if sp.simplify(_reduce_at(uu[0] + uu[1] * Y, pt, Y)) == 0]
-        gammas = [sp.nsimplify(tt / _vanish_order(T, uu, pt, Y), [sp.sqrt(3)])
-                  for pt, tt in hits]
-        if not (gammas and all(gg == gammas[0] for gg in gammas)):
-            return _torsion_realise(T, p, pts, taus, Y, verbose=verbose)
-        if gammas[0] != 0:
-            out.append((gammas[0], uu))
+    for a, b, c, k in _norm_search_all(T.q, p, g):
+        out, ok = [], True
+        for sg in (1, -1):
+            uu = (a, sg * b)
+            hits = [(pt, tt) for pt, tt in zip(pts, taus)
+                    if _iszero(_reduce_at(uu[0] + uu[1] * Y, pt, Y))]
+            gammas = [sp.nsimplify(tt / _vanish_order(T, uu, pt, Y), [sp.sqrt(3)])
+                      for pt, tt in hits]
+            if not (gammas and all(sp.simplify(gg - gammas[0]) == 0 for gg in gammas)):
+                ok = False
+                break
+            if gammas[0] != 0:
+                out.append((gammas[0], uu))
+        if ok:
             if verbose:
-                print(f"      norm factor {uu[0]} + ({uu[1]})*y "
-                      f"(N = {c}*({p})**{k}): coefficient {gammas[0]}")
-    return out
+                for gm, uu in out:
+                    print(f"      norm factor {uu[0]} + ({uu[1]})*y "
+                          f"(N = {c}*({p})**{k}): coefficient {gm}")
+            return out
+    return _torsion_realise(T, p, pts, taus, Y, verbose=verbose)
 
 
 
@@ -454,13 +474,26 @@ def _torsion_realise(T, p, pts, taus, Y, bound=24, verbose=False):
 
 # ------------------------------------------------------------- pipeline
 
-def parallel_integrate_mixed(f, T, bounds=None, extension=None, verbose=False):
+def parallel_integrate_mixed(f, T, bounds=None, extension=None, verbose=False,
+                             split_specials=False):
     """f = (f0, f1) <-> f0 + f1*y.  Returns a sympy expression, or a
     status tuple ('not elementary', ...) / ('needs torsion realisation',
     ...) / ('failed', ...)."""
     gens, q = T.gens, T.q
     bounds_given = bounds
     Y = sp.Dummy('y')
+    # the integrand must be a rational function of the generators: an opaque
+    # function such as atan(x) would be treated as a constant by the linear
+    # solver and produce a wrong integral
+    for comp in (f[0], f[1] if q is not None else sp.S(0)):
+        cc = sp.cancel(sp.sympify(comp))
+        n_, d_ = sp.fraction(cc)
+        bad = (not n_.is_polynomial(*gens) or not d_.is_polynomial(*gens)
+               or any(not a.free_symbols.isdisjoint(set(gens))
+                      for a in cc.atoms(sp.Function)))
+        if bad:
+            raise ValueError(f"integrand component {comp} is not a rational "
+                             "function of the generators; build the tower first")
     f = (sp.cancel(f[0]), sp.cancel(f[1] if q is not None else 0))
     d = sp.lcm(sp.fraction(f[0])[1], sp.fraction(f[1])[1])
     det_logs, unk_logs, denv, torsion = [], [], sp.S(1), []
@@ -551,14 +584,16 @@ def parallel_integrate_mixed(f, T, bounds=None, extension=None, verbose=False):
                     disc = sp.cancel(b ** 2 - 4 * a * c)
                     s2 = sp.cancel(disc / q)
                     s = sp.sqrt(sp.factor(s2))
-                    if sp.simplify(s ** 2 - s2) != 0 or s.has(sp.sqrt, sp.I):
+                    if sp.simplify(s ** 2 - s2) != 0 or any(
+                            isinstance(a_, sp.Pow) and a_.exp.is_Rational and not a_.exp.is_Integer
+                            and not a_.base.free_symbols.isdisjoint(set(gens))
+                            for a_ in s.atoms(sp.Pow)):
                         continue
                     ok, pend = True, []
                     for sg in (1, -1):
                         uu = (sp.expand(2 * a * gstar + b), -sg * s)
                         tv = [tt for pt, tt in zip(pts, taus)
-                              if sp.simplify(
-                                  _reduce_at(uu[0] + uu[1] * Y, pt, Y)) == 0]
+                              if _iszero(_reduce_at(uu[0] + uu[1] * Y, pt, Y))]
                         if tv and all(tt == tv[0] for tt in tv):
                             pend.append((tv[0], uu))
                         else:
@@ -619,6 +654,28 @@ def parallel_integrate_mixed(f, T, bounds=None, extension=None, verbose=False):
             if verbose:
                 print(f"  tower special: candidate log({pp})")
 
+    # specials over Fbar (Theorem 6.1): on request, replace each special
+    # p(g) with constant coefficients by its linear factors g - r
+    if split_specials:
+        new_logs = []
+        for pp, _ in unk_logs:
+            done_split = False
+            for g in gens:
+                P = sp.Poly(pp, g)
+                if P.degree() >= 2 and all(c.free_symbols.isdisjoint(set(gens))
+                                           for c in P.all_coeffs()):
+                    rd = sp.roots(P)
+                    if sum(rd.values()) == P.degree():
+                        for r, m_ in rd.items():
+                            new_logs.append((g - r, sp.S(0)))
+                        done_split = True
+                    break
+            if not done_split:
+                new_logs.append((pp, sp.S(0)))
+        unk_logs = new_logs
+        if verbose:
+            print(f"  specials split over Fbar: {[pp for pp, _ in unk_logs]}")
+
     # residue-invisible unit candidates (Remark 7.7)
     units, units_complete = [], True
     if q is not None:
@@ -662,20 +719,25 @@ def parallel_integrate_mixed(f, T, bounds=None, extension=None, verbose=False):
             c1 = sp.Symbol('b_' + '_'.join(map(str, alpha)))
             cs1.append(c1); t1.append(c1 * mono)
     V = (sp.Add(*t0) / denv, sp.Add(*t1) / denv if q is not None else sp.S(0))
-    E = _padd(T.D(V), _pscale(-1, rem))
+    # the system is assembled WITHOUT cancellation: with the unknown
+    # coefficients present, cancel would run multivariate gcds in which the
+    # unknowns count as variables (catastrophic over an algebraic extension),
+    # and a spurious common factor only rescales an equation
+    nc_add = lambda u_, v_: (sp.together(u_[0] + v_[0]), sp.together(u_[1] + v_[1]))
+    nc_scale = lambda a_, u_: (a_ * u_[0], a_ * u_[1])
+    E = nc_add(T.D(V), nc_scale(-1, rem))
     gammas = [sp.Symbol('gamma_%d' % i) for i in range(len(units))]
     for gm, (A, B, c) in zip(gammas, units):
-        E = _padd(E, _pscale(gm, _pdiv(T.D((A, B)), (A, B), q)))
+        E = nc_add(E, nc_scale(gm, _pdiv(T.D((A, B)), (A, B), q)))
     betas = [sp.Symbol('beta_%d' % i) for i in range(len(unk_logs))]
     for bt, (s, _) in zip(betas, unk_logs):
-        E = _padd(E, _pscale(bt, _pdiv(T.D((s, sp.S(0))), (s, sp.S(0)), q)
-                             if q is not None else
-                             (sp.cancel(T.D((s, sp.S(0)))[0] / s), sp.S(0))))
+        E = nc_add(E, nc_scale(bt, _pdiv(T.D((s, sp.S(0))), (s, sp.S(0)), q)
+                               if q is not None else
+                               (sp.cancel(T.D((s, sp.S(0)))[0] / s), sp.S(0))))
     eqs = []
     for comp in E:
         if comp != 0:
-            eqs += sp.Poly(sp.fraction(_c(sp.together(comp)))[0], *gens,
-                           extension=True).coeffs()
+            eqs += sp.Poly(sp.fraction(sp.together(comp))[0], *gens).coeffs()
     unks = cs0 + cs1 + gammas + betas
     sol = sp.linsolve(eqs, unks)
     if not sol:
@@ -698,6 +760,11 @@ def parallel_integrate_mixed(f, T, bounds=None, extension=None, verbose=False):
                         "second-kind differential is not exact "
                         "(exact bounds of Part I)", B)
             return r2
+        if not split_specials and any(
+                sp.Poly(pp, g).degree() >= 2 for pp, _ in unk_logs for g in gens
+                if sp.Poly(pp, g).degree() >= 0):
+            return parallel_integrate_mixed(f, T, bounds=bounds_given, extension=extension,
+                                            verbose=verbose, split_specials=True)
         return ("failed", "no solution within bounds", bounds)
     sub = dict(zip(unks, list(sol)[0]))
     frees = set().union(*[sp.sympify(v).free_symbols
