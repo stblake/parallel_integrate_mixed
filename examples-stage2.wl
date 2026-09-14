@@ -57,12 +57,12 @@ run["V1  int tan(sqrt(x^2+1)) dx: not elementary (residue -y/x at v_oo)", {t, 0}
 (* deep residues + norm search + a unit: Chebyshev needs the unit of stage 3 *)
 q4 = x^4 + 4 x^3 + 2 x^2 + 1;
 N4 = 2 x^6 + 4 x^5 + 7 x^4 - 3 x^3 - x^2 - 8 x - 8;
-run["C1  Chebyshev: residues realised, unit missing in stage 2 -> 'failed'",
-  {0, N4/((2 x^2 - 1)^2 q4)}, Tower[{x}, {{1, 0}}, q4], "failed", "Verbose" -> True];
+run["C1  Chebyshev (with stage 3 loaded: computed)", {0, N4/((2 x^2 - 1)^2 q4)},
+  Tower[{x}, {{1, 0}}, q4], "integral", "Surface" -> N4/((2 x^2 - 1)^2 Sqrt[q4]), "Verbose" -> True];
 
 (* torsion realised, then a holomorphic remainder: the certificate is stage 3 *)
-run["H1  int dx/((x-2) sqrt(x^3+1)): torsion realised, stage 2 reports 'failed'",
-  {0, 1/((x - 2) (x^3 + 1))}, Tower[{x}, {{1, 0}}, x^3 + 1], "failed", "Verbose" -> True];
+run["H1  int dx/((x-2) sqrt(x^3+1)): torsion realised, certified not elementary (stage 3)",
+  {0, 1/((x - 2) (x^3 + 1))}, Tower[{x}, {{1, 0}}, x^3 + 1], "not elementary", "Verbose" -> True];
 
 Print["\n", StringRepeat["=", 78]];
 Do[Print[PaddedForm[r[[1]], 70], "  ", r[[2]], "  ", If[r[[3]], "PASS", "FAIL"], "  ", NumberForm[r[[4]], {5, 1}], "s"], {r, results}];

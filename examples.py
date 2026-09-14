@@ -9,7 +9,7 @@ outcome the paper claims (an elementary integral, a non-elementarity
 certificate, or an honest 'failed'); every returned integral is checked once
 more here by differentiating the surface expression where one is supplied.
 
-    python examples.py            # everything (~6 minutes; Günther dominates)
+    python examples.py            # everything (~7 minutes; Günther dominates)
     QUICK=1 python examples.py    # skip the two slowest benchmarks
 """
 import os, sys, time
@@ -158,6 +158,66 @@ run("regression (not in paper): torus over the logarithmic tower", (S(5)/(2*x*t)
     surface=(4*sp.log(x)**3 + 3*sp.log(x) + 1 + 5*yt)/(2*x*sp.log(x)*yt),
     subs={t: sp.log(x)}, verbose=True)
 
+
+# ============================================ surface forms (build_tower.py)
+from build_tower import integrate_surface
+
+def runS(label, f, expect='integral'):
+    print(f"\n### {label}")
+    t0 = time.time()
+    try:
+        r = integrate_surface(f, x)
+    except Exception as e:
+        r = ("error", str(e))
+    dt = time.time() - t0
+    if expect == 'integral':
+        ok = isinstance(r, sp.Basic) and all(
+            abs(complex(sp.N((sp.diff(r, x) - f).subs(x, p), 25))) < 1e-15 for p in (sp.Rational(1, 3), sp.Rational(1, 2)))
+        print(str(r)[:300] + (' ...' if len(str(r)) > 300 else ''))
+    else:
+        ok = isinstance(r, tuple) and str(r[0]).startswith(expect)
+        print(r)
+    results.append((label, expect, ok, dt))
+    print(f"--> {'PASS' if ok else 'FAIL'}  ({dt:.1f}s)")
+
+runS("S1  log(x + sqrt(x^2+1))", sp.log(x + sp.sqrt(x**2 + 1)))
+runS("S2  exp(sqrt x)", sp.exp(sp.sqrt(x)))
+runS("S3  tan(sqrt x)/sqrt x", sp.tan(sp.sqrt(x))/sp.sqrt(x))
+runS("S4  arctan(x)/sqrt x  (ArcTan primitive, split specials)", sp.atan(x)/sp.sqrt(x))
+runS("S5  arctan(sqrt x)", sp.atan(sp.sqrt(x)))
+runS("S6  arcsin(x)  (radical introduced by the derivative)", sp.asin(x))
+runS("S7  log(x) arcsin(x)  (S'-unit over the special x)", sp.log(x)*sp.asin(x))
+runS("S8  arcsin(sqrt(x+1) - sqrt x)  (Euler parametrisation of the conic)", sp.asin(sp.sqrt(x + 1) - sp.sqrt(x)))
+runS("S9  cos^2 x / sqrt(cos^4 x + cos^2 x + 1)  (t = tan x, cubic model, Miller S'-units)",
+     sp.cos(x)**2/sp.sqrt(sp.cos(x)**4 + sp.cos(x)**2 + 1))
+runS("S10 tan(x)/sqrt(1 + sec^3 x)  (odd in sin: u = cos x)", sp.tan(x)/sp.sqrt(1 + sp.sec(x)**3))
+runS("S11 tan(x) sqrt(1 + tan^4 x)  (radical over the tangent)", sp.tan(x)*sp.sqrt(1 + sp.tan(x)**4))
+runS("S12 sqrt(tan x)  (specials split over Fbar)", sp.sqrt(sp.tan(x)))
+runS("S13 sqrt(log x): not elementary, honest 'failed'", sp.sqrt(sp.log(x)), 'failed')
+runS("S14 exp(x^2): not elementary, honest 'failed'", sp.exp(x**2), 'failed')
+runS("S15 Bronstein (E) nested radical: not elementary",
+     (sp.log(x) + sp.sqrt(sp.log(x) + sp.sqrt(sp.log(x))))/(1 + sp.log(x)), 'not elementary')
+runS("S16 sqrt(sin x)/(1 + sin^2 x)  (Charlwood A27: residues at the degree-8 prime in the residue field)",
+     sp.sqrt(sp.sin(x))/(1 + sp.sin(x)**2))
+
+# ================================================================ m >= 3
+# radicals of degree m >= 3 (elements on the Trager basis w_i = y^i/E_i):
+# unit logands from the divisor search at the places at infinity, residue
+# classes in the residue field with the m x m norm, realisation by Hensel
+# lifting and linear algebra with the pole orders at infinity distributed
+runS("M1  1/(x^3-1)^(1/3)  (Fermat cubic: units at the three places at infinity)",
+     1/(x**3 - 1)**sp.Rational(1, 3))
+runS("M2  1/(x (x^3+1)^(1/3))  (residue classes over x, 3-torsion, logands y - zeta)",
+     1/(x*(x**3 + 1)**sp.Rational(1, 3)))
+runS("M3  1/(x (x^2-1)^(1/3))  (one place at infinity, 2-torsion classes)",
+     1/(x*(x**2 - 1)**sp.Rational(1, 3)))
+runS("M4  x^2 log(x)/(x^3+1)^(2/3) + (x^3+1)^(1/3)/x  (log above the cube root)",
+     x**2*sp.log(x)/(x**3 + 1)**sp.Rational(2, 3) + (x**3 + 1)**sp.Rational(1, 3)/x)
+runS("M5  1/(x (x^4+1)^(1/4))  (m = 4, residue classes over Q(i))",
+     1/(x*(x**4 + 1)**sp.Rational(1, 4)))
+runS("M6  1/(x^4+1)^(1/4)  (m = 4, units at the four places at infinity)",
+     1/(x**4 + 1)**sp.Rational(1, 4))
+runS("M7  x/(x^3-1)^(1/3): not elementary, honest 'failed'", x/(x**3 - 1)**sp.Rational(1, 3), 'failed')
 
 # ================================================================ summary
 print("\n" + "=" * 78)
