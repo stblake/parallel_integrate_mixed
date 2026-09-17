@@ -150,6 +150,15 @@ run("10.12 Cohen's -72 variant: not elementary (non-torsion mod p + exact bounds
     (0, x/(x**4 + 10*x**2 - 96*x - 72)),
     Tower([x], [(S(1), S(0))], q=x**4 + 10*x**2 - 96*x - 72), 'not elementary', verbose=True)
 
+# 10.17: a nested radical over the conic y^2 = 1 - x^2, parametrised by (R4)
+# of the companion paper: the tower is the single generator w over the
+# genus-1 quartic with Dw = r(w) != 1, rescaled to d/dw (Lemma 3.4) so that
+# Prop. 9.2(b) applies; the remainder is (2/3) dw/y.
+wq = sp.Symbol('w', positive=True)
+run("10.17 sqrt(x + sqrt(1-x^2)) over the parametrised conic: not elementary (rescaled to d/dw, holomorphic remainder)",
+    (S(0), 1/(wq**2 + 1)), Tower([wq], [(-(wq**2 + 1)**2/(2*(wq**2 - 1)), 0)], q=-wq**4 + 2*wq**3 + 2*wq + 1),
+    'not elementary', verbose=True)
+
 # ============================================== regressions not printed in the paper
 qt = t**2 + 1
 yt = sp.sqrt(sp.log(x)**2 + 1)
@@ -157,6 +166,51 @@ run("regression (not in paper): torus over the logarithmic tower", (S(5)/(2*x*t)
     Tower([x, t], [(1, 0), (1/x, 0)], q=qt), 'integral',
     surface=(4*sp.log(x)**3 + 3*sp.log(x) + 1 + 5*yt)/(2*x*sp.log(x)*yt),
     subs={t: sp.log(x)}, verbose=True)
+
+
+# ==================================== pmint parity: the canonical residue in
+# kappa(P) at any pole order (Proposition 7.7, general case) -- three residue
+# configurations pmint's demo worksheet exercises that need no radical.
+xl = sp.log(x)
+# G1: a residue that is a constant on a normal factor of degree 3 whose
+# coefficients involve another generator; no direction of degree <= 4 with
+# constant coefficients, so the residue lives in the residue field.
+run("pmint G1: log(log(x)^3 + x^3 + 1)", ((3*t**2/x + 3*x**2)/(t**3 + x**3 + 1), S(0)),
+    Tower([x, t], [(1, 0), (1/x, 0)]), 'integral',
+    surface=(3*xl**2/x + 3*x**2)/(xl**3 + x**3 + 1), subs={t: xl}, verbose=True)
+# G1c: the same prime carrying a NON-constant residue -> a certificate (pmint
+# returns nothing here).
+run("pmint G1c: 1/(log(x)^3 + x^3 + 1) not elementary", (1/(t**3 + x**3 + 1), S(0)),
+    Tower([x, t], [(1, 0), (1/x, 0)]), 'not elementary', verbose=True)
+# G2: pmint's log-exp showcase -- a pole of order 2 at a place with
+# non-constant coordinates (delta = 1).
+el, ee = sp.symbols('el ee', positive=True)
+g2 = sp.cancel((1 + x + x*ee)*(x + el + ee - 1)/((x + el + ee)**2*x))
+run("pmint G2: log-exp showcase (deep pole, non-constant place)", (g2, S(0)),
+    Tower([x, el, ee], [(1, 0), (1/x, 0), (ee, 0)]), 'integral',
+    surface=(1 + x + x*sp.exp(x))*(x + xl + sp.exp(x) - 1)/((x + xl + sp.exp(x))**2*x),
+    subs={el: xl, ee: sp.exp(x)}, verbose=True)
+# G3: pmint's LambertW(x^2) example -- a pole of order 3 at a normal prime of
+# delta = 2 (a non-monomial generator).
+Wg = sp.Symbol('Wg', positive=True)
+Wx2 = sp.LambertW(x**2)
+run("pmint G3: LambertW(x^2) rational (deep pole, delta = 2)",
+    (((x**2 + 2)*Wg**2 + x**2*(2*Wg + 1))/(x*(1 + Wg)**3), S(0)),
+    Tower([x, Wg], [(1, 0), (2*Wg/(x*(1 + Wg)), 0)]), 'integral',
+    surface=((x**2 + 2)*Wx2**2 + x**2*(2*Wx2 + 1))/(x*(1 + Wx2)**3),
+    subs={Wg: Wx2}, verbose=True)
+
+
+# R1-R3: no radical, a prime whose places carry UNEQUAL residues: the places
+# are the principal primes g - rho and the logands are read off (the WL port
+# returned 'needs torsion realisation' here until 2026-09-16).
+run("R1 rational 1/(x^4-1): residues -+i/4 over x^2+1", (1/(x**4 - 1), S(0)),
+    Tower([x], [(1, 0)]), 'integral', surface=1/(x**4 - 1))
+run("R2 rational x/(x^3-2): three distinct residues over a cubic prime", (x/(x**3 - 2), S(0)),
+    Tower([x], [(1, 0)]), 'integral', surface=x/(x**3 - 2))
+run("R3 1/(x (log(x)^2+1)): unequal residues over t^2+1 in the log variable",
+    (1/(x*(t**2 + 1)), S(0)), Tower([x, t], [(1, 0), (1/x, 0)]), 'integral',
+    surface=1/(x*(sp.log(x)**2 + 1)), subs={t: sp.log(x)})
 
 
 # ============================================ surface forms (build_tower.py)
@@ -199,6 +253,10 @@ runS("S15 Bronstein (E) nested radical: not elementary",
      (sp.log(x) + sp.sqrt(sp.log(x) + sp.sqrt(sp.log(x))))/(1 + sp.log(x)), 'not elementary')
 runS("S16 sqrt(sin x)/(1 + sin^2 x)  (Charlwood A27: residues at the degree-8 prime in the residue field)",
      sp.sqrt(sp.sin(x))/(1 + sp.sin(x)**2))
+runS("S17 sqrt(1 + sec x tan x)  (cubic model: the residue divisor is 2-torsion, its places are not)",
+     sp.sqrt(1 + sp.sec(x)*sp.tan(x)))
+runS("S18 sqrt(x + sqrt(1 - x^2)): not elementary  (nested radical over the conic: (R4), rescaled to d/dw, holomorphic remainder)",
+     sp.sqrt(x + sp.sqrt(1 - x**2)), 'not elementary')
 
 # ================================================================ m >= 3
 # radicals of degree m >= 3 (elements on the Trager basis w_i = y^i/E_i):

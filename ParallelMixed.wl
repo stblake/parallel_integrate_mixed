@@ -1,6 +1,6 @@
 (* ::Package:: *)
 
-(* ParallelMixed.wl -- stage 1 of the Wolfram Language port of parallel_mixed.py
+(* ParallelMixed.wl -- a Mathematica port of parallel_mixed.py
 
    Parallel (Risch-Norman) integration over a simple radical y^2 = q sitting
    anywhere in a tower of transcendental generators, after
@@ -447,8 +447,9 @@ DeepResidues[T_, f_, p_, pts_, Y_] := Module[{g = T["gens"][[1]], e, out = {}, e
 (* EllOps[q, g]
    Chord-and-tangent group law on y^2 = q(g), deg q = 3, after normalising
    to the monic model X = c3 g, Ytil = c3 y: Ytil^2 = X^3 + c2 X^2 + c1 c3 X
-   + c0 c3^2.  Returns {toM, add}: toM maps a point (g, y) to the model and
-   add is the group law with the identity represented by None.             *)
+   + c0 c3^2.  Returns {toM, add, c}: toM maps a point (g, y) to the model,
+   add is the group law with the identity represented by None, and c the
+   coefficients {c3, c2, c1, c0} of q.                                       *)
 EllOps[q_, g_] := Module[{c, c3, toM, add},
   c = PadLeft[Reverse[CoefficientList[q, g]], 4];       (* {c3, c2, c1, c0} *)
   c3 = c[[1]];
@@ -467,7 +468,7 @@ EllOps[q_, g_] := Module[{c, c3, toM, add},
           RR[(y2 - y1)/(x2 - x1)]];
         x3 = RR[lam^2 - c[[2]] - x1 - x2];
         {x3, RR[lam (x1 - x3) - y1]}]]]];
-  {toM, add}];
+  {toM, add, c}];
 
 (* DivisionPolyOrder[A, B, X0, Y0, Nmax]
    Order of the point (X0, Y0) on Ytil^2 = X^3 + A X + B if it is <= Nmax,
@@ -486,86 +487,103 @@ DivisionPolyOrder[A_, B_, X0_, Y0_, Nmax_: 24] := Module[{X, yv, psi, red, get, 
   n = SelectFirst[Range[2, Nmax], IsZero[get[#] /. {X -> X0, yv -> Y0}] &, None];
   n];
 
+(* TorsionOrder[q, g, P, add, c, bound]
+   The order m <= bound of the point P (model coordinates of EllOps): by
+   the division polynomials when the model is depressed, otherwise by
+   repeated addition; None if no order <= bound.                            *)
+TorsionOrder[q_, g_, P_, add_, c_, bound_] := Module[{m = None, kP},
+  If[c[[2]] === 0, m = DivisionPolyOrder[c[[3]] c[[1]], c[[4]] c[[1]]^2, P[[1]], P[[2]], bound]];
+  If[m === None, kP = P; Do[kP = add[kP, P]; If[kP === None, m = k; Break[]], {k, 2, bound}]];
+  m];
+
+(* EllSum[q, g, Y, terms, add, c]
+   The sum S of the points of terms = {{P, n}, ...}, n an integer, in the
+   group law of EllOps, and the function h with div(h) = sum n (P - oo) -
+   (S - oo): for S + P = R the line through S and P over the vertical
+   through R has divisor S + P - R - oo, and -P = (x_P, -y_P) with
+   div(x - x_P) = P + (-P) - 2 oo.  Accumulated in K[Y, g] modulo Y^2 - q;
+   returns {S, {h0, h1}} with h = h0 + h1 y.  With terms = {{P, m}}, m the
+   order of P, h is the Miller function with divisor m P - m oo.           *)
+EllSum[q_, g_, Y_, terms_, add_, c_] := Module[{c3 = c[[1]], X0, S = None, num = 1, den = 1, P, n, x1, y1, lam, h0, h1},
+  X0 = c3 g;
+  Do[{P, n} = term;
+    If[n < 0, P = {P[[1]], -P[[2]]}; n = -n; den *= (X0 - P[[1]])^n];
+    Do[If[S === None, S = P; Continue[]];
+      {x1, y1} = S;
+      If[IsZero[x1 - P[[1]]] && IsZero[y1 + P[[2]]], num *= (X0 - x1); S = None; Continue[]];   (* S = -P: the vertical line *)
+      lam = If[IsZero[x1 - P[[1]]], RR[(3 x1^2 + 2 c[[2]] x1 + c[[3]] c3)/(2 y1)], RR[(P[[2]] - y1)/(P[[1]] - x1)]];
+      num = PolynomialRemainder[Expand[num (c3 Y - y1 - lam (X0 - x1))], Y^2 - q, Y];
+      S = add[S, P];
+      den *= (X0 - S[[1]]),
+      {n}],
+    {term, terms}];
+  h0 = Can[(num + (num /. Y -> -Y))/2/den];
+  h1 = Can[(num - (num /. Y -> -Y))/(2 Y)/den];
+  {S, Collect[Numerator[#], g, RR]/Collect[Denominator[#], g, RR] & /@ {h0, h1}}];
+
 (* TorsionOrderAndMiller[q, g, pt, Y, bound]
    On y^2 = q(g), deg q = 3: the order m of [P - oo] for the place
-   pt = {g, rho, y0} with constant coordinates (division polynomials when
-   the model is depressed, otherwise repeated addition) and the Miller
-   function h with div(h) = m P - m oo, as a pair.  None if no order <=
-   bound is found.  Used both to realise residue divisors (TorsionRealise)
-   and to generate S'-units over a special prime.                          *)
-TorsionOrderAndMiller[q_, g_, pt_, Y_, bound_: 24] := Module[
-  {toM, add, c, c3, X0, P, m, kP, fnum = 1, fden = 1, x1, y1, lam, line, num, u0, u1},
-  {toM, add} = EllOps[q, g];
-  c = PadLeft[Reverse[CoefficientList[q, g]], 4]; c3 = c[[1]]; X0 = c3 g;
+   pt = {g, rho, y0} with constant coordinates and the Miller function h
+   with div(h) = m P - m oo, as a pair; None if no order <= bound is found.
+   Used to generate S'-units over a special prime.                          *)
+TorsionOrderAndMiller[q_, g_, pt_, Y_, bound_: 24] := Module[{toM, add, c, P, m},
+  {toM, add, c} = EllOps[q, g];
   P = toM[{pt[[2]], pt[[3]]}];
-  m = If[c[[2]] === 0, DivisionPolyOrder[c[[3]] c3, c[[4]] c3^2, P[[1]], P[[2]], bound], None];
-  If[m === None, kP = P; Do[kP = add[kP, P]; If[kP === None, m = k; Break[]], {k, 2, bound}]];
-  If[m === None, Return[None]];
-  kP = P;
-  Do[{x1, y1} = kP;
-    Which[
-      IsZero[x1 - P[[1]]] && IsZero[y1 - P[[2]]],
-        lam = RR[(3 x1^2 + 2 c[[2]] x1 + c[[3]] c3)/(2 y1)];
-        line = c3 Y - y1 - lam (X0 - x1); kP = add[kP, P]; fnum *= line;
-        If[kP =!= None, fden *= (X0 - kP[[1]])],
-      IsZero[x1 - P[[1]]],
-        fnum *= (X0 - x1); kP = add[kP, P],
-      True,
-        lam = RR[(P[[2]] - y1)/(P[[1]] - x1)];
-        line = c3 Y - y1 - lam (X0 - x1); kP = add[kP, P]; fnum *= line;
-        If[kP =!= None, fden *= (X0 - kP[[1]])]],
-    {k, 1, m - 1}];
-  num = PolynomialRemainder[Expand[fnum], Y^2 - q, Y];
-  u0 = Can[(num + (num /. Y -> -Y))/2/fden];
-  u1 = Can[(num - (num /. Y -> -Y))/(2 Y)/fden];
-  {u0, u1} = Collect[Numerator[#], g, RR]/Collect[Denominator[#], g, RR] & /@ {u0, u1};
-  {m, {u0, u1}}];
+  m = TorsionOrder[q, g, P, add, c, bound];
+  If[m === None, None, {m, EllSum[q, g, Y, {{P, m}}, add, c][[2]]}]];
 
-(* TorsionRealise[T, p, pts, taus, Y, bound, verbose]
-   Realisation of a residue divisor by torsion on an elliptic curve with one
-   place at infinity (deg q = 3, constant coordinates), Algorithm 3(d): the
-   order mu of [P - oo] is certified by the division polynomials (fallback:
-   repeated addition), the Miller function with divisor mu P - mu oo is
-   built by the additive loop h_{k+1} = h_k line(kP, P) / vert((k+1)P), and
-   the logand is recorded with coefficient tau/mu.  Returns a list of
-   {coefficient, pair} or None.                                             *)
-TorsionRealise[T_, p_, pts_, taus_, Y_, bound_: 24, verbose_: False] := Catch[Module[
-  {g, q, toM, add, c, c3, X0, out = {}, P, m, kP, fnum, fden, x1, y1, lam, line, num, u0, u1, pt, tau},
-  g = pts[[1, 1]]; q = T["q"];
-  If[Exponent[q, g] =!= 3 || ! FreeQ[q, Alternatives @@ DeleteCases[T["gens"], g]], Throw[None, "tors"]];
-  If[AnyTrue[pts, ! FreeQ[{#[[2]], #[[3]]}, Alternatives @@ T["gens"]] &], Throw[None, "tors"]];
-  {toM, add} = EllOps[q, g];
-  c = PadLeft[Reverse[CoefficientList[q, g]], 4]; c3 = c[[1]];
-  X0 = c3 g;
-  Do[pt = pts[[i]]; tau = taus[[i]];
-    If[tau === 0, Continue[]];
-    P = toM[{pt[[2]], pt[[3]]}];
-    m = If[c[[2]] === 0, DivisionPolyOrder[c[[3]] c3, c[[4]] c3^2, P[[1]], P[[2]], bound], None];
-    If[verbose && m =!= None, Print["      (order ", m, " certified by the division polynomial psi_", m, ")"]];
-    If[m === None,
-      kP = P;
-      Do[kP = add[kP, P]; If[kP === None, m = k; Break[]], {k, 2, bound}]];
-    If[m === None, Throw[None, "tors"]];
-    fnum = 1; fden = 1; kP = P;
-    Do[{x1, y1} = kP;
-      Which[
-        IsZero[x1 - P[[1]]] && IsZero[y1 - P[[2]]],
-          lam = RR[(3 x1^2 + 2 c[[2]] x1 + c[[3]] c3)/(2 y1)];
-          line = c3 Y - y1 - lam (X0 - x1); kP = add[kP, P]; fnum *= line;
-          If[kP =!= None, fden *= (X0 - kP[[1]])],
-        IsZero[x1 - P[[1]]],
-          fnum *= (X0 - x1); kP = add[kP, P],
-        True,
-          lam = RR[(P[[2]] - y1)/(P[[1]] - x1)];
-          line = c3 Y - y1 - lam (X0 - x1); kP = add[kP, P]; fnum *= line;
-          If[kP =!= None, fden *= (X0 - kP[[1]])]],
-      {k, 1, m - 1}];
-    num = PolynomialRemainder[Expand[fnum], Y^2 - q, Y];
-    u0 = Can[(num + (num /. Y -> -Y))/2/fden];
-    u1 = Can[(num - (num /. Y -> -Y))/(2 Y)/fden];
-    AppendTo[out, {Simplify[tau/m], {u0, u1}}];
-    If[verbose, Print["      torsion: [P - oo] of order ", m, " at (", pt[[2]], ", ", pt[[3]], "); Miller logand with coefficient ", Simplify[tau/m]]],
-    {i, Length[pts]}];
+(* QCoords[consts]
+   The coordinates over Q of algebraic constants in one common number
+   field (ToNumberField), padded to a common length; a rational constant
+   is its own coordinate.                                                   *)
+QCoords[consts_List] := PadRight[If[Head[#] === AlgebraicNumber, #[[2]], {#}] & /@ ToNumberField[consts]];
+
+(* TorsionRealise[T, pending, Y, bound, verbose]
+   Algorithm 3(d): the residue divisor of the pending primes {{p, pts,
+   taus}, ...} on an elliptic curve with one place at infinity (deg q = 3,
+   constant coordinates).  A place whose class [P - oo] is torsion of
+   order mu is realised on its own by its Miller function; the residues of
+   the remaining places are decomposed over a Q-basis (beta_j) of their
+   Q-span, tau_P = sum_j n_Pj beta_j with n_Pj integers, so that the
+   divisor is sum_j beta_j D_j with D_j = sum_P n_Pj (P - oo) of degree 0,
+   and each D_j is realised by the group law: S_j = sum_P n_Pj P, mu_j the
+   order of S_j (1 when S_j = oo), and EllSum on mu_j D_j gives u_j with
+   div(u_j) = mu_j D_j, recorded with coefficient beta_j/mu_j.  Returns a
+   list of {coefficient, pair} or None (a class of order > bound, no cubic
+   model, or a place with non-constant coordinates).                        *)
+TorsionRealise[T_, pending_, Y_, bound_: 24, verbose_: False] := Catch[Module[
+  {gens = T["gens"], g, q = T["q"], places, toM, add, c, realise, out = {}, rest = {}, P, got, A, Rr, piv, N0, ns, terms, beta},
+  g = pending[[1, 2, 1, 1]];
+  If[Exponent[q, g] =!= 3 || ! FreeQ[q, Alternatives @@ DeleteCases[gens, g]] || AnyTrue[pending, #[[2, 1, 1]] =!= g &], Throw[None, "tors"]];
+  places = Cases[Flatten[Transpose[{#[[2]], #[[3]]}] & /@ pending, 1], {_, tau_} /; tau =!= 0];
+  If[! FreeQ[{#[[1, 2]], #[[1, 3]], #[[2]]} & /@ places, Alternatives @@ gens], Throw[None, "tors"]];
+  {toM, add, c} = EllOps[q, g];
+  (* {mu, u} with div(u) = mu * sum n (P - oo) for terms = {{P, n}, ...}, or None *)
+  realise[terms0_] := Module[{S = None, mu},
+    Do[Do[S = add[S, If[tm[[2]] > 0, tm[[1]], {tm[[1, 1]], -tm[[1, 2]]}]], {Abs[tm[[2]]]}], {tm, terms0}];
+    mu = If[S === None, 1, TorsionOrder[q, g, S, add, c, bound]];
+    If[mu === None, None, {mu, EllSum[q, g, Y, {#[[1]], mu #[[2]]} & /@ terms0, add, c][[2]]}]];
+  Do[P = toM[{pl[[1, 2]], pl[[1, 3]]}];
+    got = realise[{{P, 1}}];
+    If[got === None, AppendTo[rest, {pl[[1]], P, pl[[2]]}],
+      AppendTo[out, {RR[pl[[2]]/got[[1]]], got[[2]]}];
+      If[verbose, Print["      torsion: [P - oo] of order ", got[[1]], " at (", pl[[1, 2]], ", ", pl[[1, 3]], "); Miller logand with coefficient ", RR[pl[[2]]/got[[1]]]]]],
+    {pl, places}];
+  If[rest =!= {},
+    A = Transpose[QCoords[rest[[All, 3]]]];                 (* column i: the residue of rest[[i]] *)
+    If[! MatrixQ[A, MatchQ[#, _Integer | _Rational] &], Throw[None, "tors"]];
+    Rr = DeleteCases[RowReduce[A], {0 ..}];                 (* A[[All, i]] = sum_j Rr[[j, i]] A[[All, piv[[j]]]] *)
+    piv = FirstPosition[#, z_ /; z != 0][[1]] & /@ Rr;
+    Do[N0 = LCM @@ Denominator[Rr[[j]]];
+      ns = N0 Rr[[j]];
+      terms = Cases[Transpose[{rest[[All, 2]], ns}], {_, n_} /; n != 0];
+      got = realise[terms];
+      If[got === None, Throw[None, "tors"]];
+      beta = rest[[piv[[j]], 3]]/N0;
+      AppendTo[out, {RR[beta/got[[1]]], got[[2]]}];
+      If[verbose, Print["      torsion: the divisor ", StringRiffle[Cases[Transpose[{rest[[All, 1]], ns}], {pt_, n_} /; n != 0 :> ToString[n] <> "*(" <> ToString[pt[[2]], InputForm] <> ", " <> ToString[pt[[3]], InputForm] <> ")"], " + "],
+        " - (", Total[ns], ") oo has order ", got[[1]], "; logand with coefficient ", RR[beta/got[[1]]]]],
+      {j, Length[piv]}]];
   out], "tors"];
 
 (* PairReduce[e, Ysym, q]
@@ -915,13 +933,18 @@ RealiseClass[T_, g_, supp_, c_, mmax_: 12, verbose_: False] := Catch[Module[
 
 (* RealisePoints[T, p, pts, taus, Y, verbose]
    Realisation of the residues taus at the places pts over a prime p that
-   neither the polynomial p nor the y-split realises: try every norm-search
+   neither the polynomial p nor the y-split realises.  Without a radical the
+   places are the principal primes g - rho and the logands are read off.
+   Over a curve: try every norm-search
    solution u = a +- b y, accept the first whose vanishing set carries a
-   constant ratio tau_P / ord_P(u) (the logand coefficient), and otherwise
-   fall back to TorsionRealise.  Returns a list of {coefficient, pair} or
-   None.                                                                    *)
+   constant ratio tau_P / ord_P(u) (the logand coefficient); the primes it
+   leaves are realised jointly by TorsionRealise.  Returns a list of
+   {coefficient, pair} or None.                                             *)
 RealisePoints[T_, p_, pts_, taus_, Y_, verbose_: False] := Catch[Module[{g, out, ok, uu, hits, gammas, a, b, c, k},
   g = pts[[1, 1]];
+  (* no curve: every place over p is the principal prime g - rho *)
+  If[T["q"] === None,
+    Throw[Cases[Transpose[{pts, taus}], {{_, rho_, _}, tau_} /; tau =!= 0 :> {tau, {g - rho, 0}}], "realise"]];
   Do[{a, b, c, k} = sol; out = {}; ok = True;
     Do[uu = {a, sg b};
       hits = Pick[Transpose[{pts, taus}], IsZero[ReduceAt[uu[[1]] + uu[[2]] Y, #, Y]] & /@ pts, True];
@@ -933,7 +956,7 @@ RealisePoints[T_, p_, pts_, taus_, Y_, verbose_: False] := Catch[Module[{g, out,
       If[verbose, Do[Print["      norm factor ", o[[2, 1]], " + (", o[[2, 2]], ")*y (N = ", c, "*(", p, ")^", k, "): coefficient ", o[[1]]], {o, out}]];
       Throw[out, "realise"]],
     {sol, NormSearchAll[T["q"], p, g]}];
-  TorsionRealise[T, p, pts, taus, Y, 24, verbose]], "realise"];
+  None], "realise"];
 
 (* VinftyResidue[T, f, Y]
    Residue at the place v_oo of a hypertangent top generator t with
@@ -1554,7 +1577,7 @@ BuildTower[integrand_, x_Symbol] := Module[
           If[nrm =!= c, expr = expr /. c -> nrm; Continue[]]];
         {base, r} = List @@ c; mm = Denominator[r];          (* the degree of this root *)
         (* flattenable root: base = coef g + rest, coef constant, rest free of g  (Lemma 3.2) *)
-        g = SelectFirst[gens, PolynomialQ[base, #] && Exponent[base, #] == 1 &&
+        g = SelectFirst[gens, PolynomialQ[base, #] && Exponent[base, #] == 1 && FreeQ[base, Y] &&
                               FreeQ[Coefficient[base, #, 1], Alternatives @@ gens] &, None];
         If[g =!= None,
           coef = Coefficient[base, g, 1]; rest = base /. g -> 0;
@@ -1564,7 +1587,8 @@ BuildTower[integrand_, x_Symbol] := Module[
           gens = ReplacePart[gens, pos -> u];
           derivs = ReplacePart[derivs, pos -> Pscale[1/(mm u^(mm - 1)), Dbase]];
           derivs = derivs /. g -> (u^mm - rest)/coef;
-          If[q =!= None, q = Expand[q /. g -> (u^mm - rest)/coef]];
+          If[q =!= None, q = Expand[q /. g -> (u^mm - rest)/coef];
+            If[! FreeQ[q, Y], Message[BuildTower::radicand, q]; Throw[$Failed, "build"]]];
           AppendTo[back, u -> base^(1/mm)];
           record[u, (base /. Y -> q^(1/m))^(1/mm)];
           expr = expr /. Power[base, rr_Rational] :> u^(mm rr);   (* the root itself, before g is eliminated *)
@@ -1628,9 +1652,20 @@ Options[ParallelIntegrateMixed] = {"Bounds" -> None, "Verbose" -> False, "Verify
    every special prime split into its linear factors over the algebraic
    closure (Theorem 6.1 describes the specials over Fbar; the integral of
    Sqrt[Tan[x]] needs distinct coefficients on the four factors of 1 + u^4). *)
-ParallelIntegrateMixed[f0_List, T_Association, opts : OptionsPattern[]] := Module[
-  {r, split = OptionValue["SplitSpecials"], se, gq, isConic, isQuartic, res, T2, f2, back, r2, failedQ},
+ParallelIntegrateMixed[f00_List, T0_Association, opts : OptionsPattern[]] := Module[
+  {f0 = f00, T = T0, r, split = OptionValue["SplitSpecials"], se, gq, isConic, isQuartic, res, T2, f2, back, r2, failedQ, g0, r0},
   failedQ[rr_] := ListQ[rr] && MemberQ[{"failed", "needs torsion realisation (milestone iii)"}, rr[[1]]];
+  (* 0. a single generator g over the curve with Dg = r(g) != 1 -- a flattened
+        root (Lemma 3.2) or the parameter of a parametrised conic -- is rescaled
+        to d/dg (Lemma 3.4): int f dx = int (f/r) dg with the same antiderivative,
+        and the tower is the setting of Part I (exact bounds, Prop. 9.2(b)) *)
+  If[Length[T["gens"]] == 1 && T["q"] =!= None,
+    g0 = T["gens"][[1]]; r0 = T["derivs"][[1, 1]];
+    If[r0 =!= 1 && MatchQ[Rest[T["derivs"][[1]]], {0 ...}] && RationalQ[r0, {g0}] &&
+        Complement[Cases[{r0}, _Symbol, Infinity], {g0}] === {},
+      If[OptionValue["Verbose"], Print["  single generator ", g0, " with D", g0, " = ", r0, ": rescaled to d/d", g0, " (Lemma 3.4)"]];
+      f0 = Can[#/r0] & /@ f0;
+      T = Tower[{g0}, {{1}}, T["q"], T["m"]]]];
   gq = If[T["q"] === None, None, SelectFirst[T["gens"], FreeQ[T["q"], Alternatives @@ DeleteCases[T["gens"], #]] &, None]];
   isConic = T["m"] == 2 && gq =!= None && Exponent[T["q"], gq] == 2 && FreeQ[CoefficientList[T["q"], gq], Alternatives @@ T["gens"]];
   isQuartic = T["m"] == 2 && gq =!= None && Exponent[T["q"], gq] == 4 && FreeQ[CoefficientList[T["q"], gq], Alternatives @@ T["gens"]] &&
@@ -1924,7 +1959,7 @@ iPIM[f0_, T_, OptionsPattern[ParallelIntegrateMixed]] := Module[
           If[MemberQ[cert, Undecided], Throw[{"failed", "residue constancy undecided", p, First[Pick[taus, cert, Undecided]]}, "PIM"]];
           If[AnyTrue[taus, # =!= 0 &],
             got = If[m == 2, RealisePoints[T, p, pts, taus, Y, verbose], RealiseAtPoints[T, p, pts, taus, verbose]];
-            If[got === None, AppendTo[torsion, {p, taus}], detLogs = Join[detLogs, got]]]]]]];
+            If[got === None, AppendTo[torsion, {p, pts, taus}], detLogs = Join[detLogs, got]]]]]]];
     If[vP == -delta,
       (* tau_P = e (f h / Dh)|_P with h = p *)
       Dp = TowerD[T, TScalar[T, p]];
@@ -1962,7 +1997,7 @@ iPIM[f0_, T_, OptionsPattern[ParallelIntegrateMixed]] := Module[
         Continue[]];
       If[q =!= None && m >= 3,
         got = RealiseAtPoints[T, p, pts, taus, verbose];
-        If[got === None, AppendTo[torsion, {p, taus}], detLogs = Join[detLogs, got]];
+        If[got === None, AppendTo[torsion, {p, pts, taus}], detLogs = Join[detLogs, got]];
         Continue[]];
       (* quadratic y-split: disc = s^2 q  =>  factors 2 a g + b -+ s y, N = 4 a p *)
       done = False;
@@ -1990,7 +2025,7 @@ iPIM[f0_, T_, OptionsPattern[ParallelIntegrateMixed]] := Module[
           {gg, gens}]];
       If[done, Continue[]];
       got = RealisePoints[T, p, pts, taus, Y, verbose];
-      If[got === None, AppendTo[torsion, {p, taus}], detLogs = Join[detLogs, got]]],
+      If[got === None, AppendTo[torsion, {p, pts, taus}], detLogs = Join[detLogs, got]]],
     {fac, fl}];
   If[pendingClasses =!= {},
     (* a residue class may be supported over several primes: realise the
@@ -2007,7 +2042,12 @@ iPIM[f0_, T_, OptionsPattern[ParallelIntegrateMixed]] := Module[
       If[got === None, AppendTo[unrealised, {Times @@ (#[[1]] & /@ grp[[3]]), {grp[[1]]}}], AppendTo[detLogs, got]],
       {grp, groups}];
     If[unrealised =!= {}, Throw[{"needs torsion realisation (milestone iii)", unrealised}, "PIM"]]];
-  If[torsion =!= {}, Throw[{"needs torsion realisation (milestone iii)", torsion}, "PIM"]];
+  (* the divisor may be realisable only jointly over several primes: by
+     torsion on a cubic model (Algorithm 3(d)) *)
+  If[torsion =!= {} && m == 2,
+    got = TorsionRealise[T, torsion, Y, 24, verbose];
+    If[got =!= None, detLogs = Join[detLogs, got]; torsion = {}]];
+  If[torsion =!= {}, Throw[{"needs torsion realisation (milestone iii)", {#[[1]], #[[3]]} & /@ torsion}, "PIM"]];
 
   (* residue at the hypertangent place at infinity (Lemma 8.1) *)
   If[q =!= None && Length[gens] >= 2,

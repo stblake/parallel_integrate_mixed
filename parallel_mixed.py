@@ -998,7 +998,7 @@ def _realise_points(T, p, pts, taus, Y, verbose=False):
                     print(f"      norm factor {uu[0]} + ({uu[1]})*y "
                           f"(N = {c}*({p})**{k}): coefficient {gm}")
             return out
-    return _torsion_realise(T, p, pts, taus, Y, verbose=verbose)
+    return None
 
 
 
@@ -1292,60 +1292,64 @@ def _ell_ops(q, g, conv):
     return to_m, add, c
 
 
-def _torsion_order(q, g, P, rho, yv, conv, add, c, bound):
-    """The order m <= bound of [P - oo]: by the division polynomials of Part
-    III when the model is depressed, else by repeated addition; None if none."""
-    cc = sp.Poly(q, g).all_coeffs()
-    c3 = cc[0]
-    if _HAVE_RN and cc[1] == 0:
-        m = division_poly_order(cc[2] * c3, cc[3] * c3 ** 2,
-                                sp.radsimp(c3 * rho), sp.radsimp(c3 * yv), Nmax=bound)
+def _torsion_order(q, g, P, conv, add, c, bound):
+    """The order m <= bound of the point P (model coordinates of _ell_ops):
+    by the division polynomials of Part III when the model is depressed,
+    else by repeated addition; None if no order <= bound."""
+    if _HAVE_RN and c[1] == conv.K.zero:
+        cc = sp.Poly(q, g).all_coeffs()
+        m = division_poly_order(cc[2] * cc[0], cc[3] * cc[0] ** 2,
+                                conv.back(P[0]), conv.back(P[1]), Nmax=bound)
         if m is not None:
-            return m, True
+            return m
     kP = P
     for k in range(2, bound + 1):
         kP = add(kP, P)
         if kP is None:
-            return k, False
-    return None, False
+            return k
+    return None
 
 
-def _miller(q, g, Y, P, m, conv, add, c):
-    """The Miller function h with div(h) = m P - m oo on y^2 = q, as a pair
-    (h0, h1) of rational functions of g: the lines and verticals of the
-    additive loop h_{k+1} = h_k * line(kP, P) / vert((k+1)P) accumulated in
-    K[Y, g], reduced modulo Y^2 - q, the pair cancelled in K[g]."""
+def _ell_sum(q, g, Y, terms, conv, add, c):
+    """The sum S of the points of terms = [(P, n)], n in Z, in the group law
+    of _ell_ops, and the function h with div(h) = sum n (P - oo) - (S - oo):
+    for S + P = R the line through S and P over the vertical through R has
+    divisor S + P - R - oo, and -P = (x_P, -y_P) with div(x - x_P) =
+    P + (-P) - 2 oo.  Accumulated in K[Y, g] modulo Y^2 - q; returns
+    (S, (h0, h1)) with h = h0 + h1 y as rational functions of g cancelled in
+    K[g].  With terms = [(P, m)], m the order of P, h is the Miller function
+    with divisor m P - m oo."""
     K = conv.K
     R, YR, gR = _ring([Y, g], K)
     c3, a2, a4 = c[0], c[1], c[2] * c[0]
     two, three = K.convert(2), K.convert(3)
     qR = R({(0, k): conv(z) for (k,), z in sp.Poly(q, g).as_dict().items()})
     X0 = c3 * gR
-    f_num, f_den = R.one, R.one
-    kP = P
-    for k in range(1, m):
-        x1, y1 = kP
-        if x1 == P[0] and y1 == P[1]:
-            lam = (three * x1 ** 2 + two * a2 * x1 + a4) / (two * y1)
-        elif x1 == P[0]:
-            f_num *= (X0 - x1)
-            kP = add(kP, P)
-            continue
-        else:
-            lam = (P[1] - y1) / (P[0] - x1)
-        line = c3 * YR - y1 - lam * (X0 - x1)               # Ytil - y1 - lam (X - x1)
-        kP = add(kP, P)
-        f_num *= line
-        if kP is not None:
-            f_den *= (X0 - kP[0])
-    num = f_num.rem(YR ** 2 - qR)                            # lex, Y first: Y-degree <= 1
+    S, num, den = None, R.one, R.one
+    for P, n in terms:
+        if n < 0:
+            P, n = (P[0], -P[1]), -n
+            den *= (X0 - P[0]) ** n
+        for _ in range(n):
+            if S is None:
+                S = P
+                continue
+            x1, y1 = S
+            if x1 == P[0] and y1 + P[1] == K.zero:          # S = -P: the vertical line
+                num, S = num * (X0 - x1), None
+                continue
+            lam = ((three * x1 ** 2 + two * a2 * x1 + a4) / (two * y1) if x1 == P[0]
+                   else (P[1] - y1) / (P[0] - x1))
+            num = (num * (c3 * YR - y1 - lam * (X0 - x1))).rem(YR ** 2 - qR)
+            S = add(S, P)
+            den *= X0 - S[0]
     parts = []
     for i in (0, 1):
         hi = R({(0, mo[1]): z for mo, z in num.terms() if mo[0] == i})
-        n_, d_ = hi.cancel(f_den)
+        n_, d_ = hi.cancel(den)
         expr = lambda Pl: sp.Add(*[conv.back(z) * g ** mo[1] for mo, z in Pl.terms()])
         parts.append(expr(n_) / expr(d_))
-    return tuple(parts)
+    return S, tuple(parts)
 
 
 def _pair_reduce(e, Ysym, q):
@@ -1362,17 +1366,16 @@ def _pair_reduce(e, Ysym, q):
 
 def _torsion_order_and_miller(q, g, pt, Y, bound=24, verbose=False):
     """On y^2 = q(g), deg q = 3: the order m of [P - oo] for the place
-    pt = (g, rho, y0) with constant coordinates (division polynomials,
-    fallback repeated addition) and the Miller function h with
-    div(h) = m P - m oo as a pair.  None if no order <= bound is found."""
+    pt = (g, rho, y0) with constant coordinates and the Miller function h
+    with div(h) = m P - m oo as a pair.  None if no order <= bound is found."""
     rho, yv = pt[1], pt[2]
     conv = _field_for(_alg_atoms([sp.sympify(rho), sp.sympify(yv)] + sp.Poly(q, g).all_coeffs()))
     to_m, add, c = _ell_ops(q, g, conv)
     P = to_m((rho, yv))
-    m, _ = _torsion_order(q, g, P, rho, yv, conv, add, c, bound)
+    m = _torsion_order(q, g, P, conv, add, c, bound)
     if m is None:
         return None
-    return m, _miller(q, g, Y, P, m, conv, add, c)
+    return m, _ell_sum(q, g, Y, [(P, m)], conv, add, c)[1]
 
 
 def _rational_point(q, g):
@@ -1467,35 +1470,80 @@ def quartic_to_cubic(T, f):
     back = [(sp.sqrt(sub_s(Delta)), sub_s(2 * Ap * g + Bp)), (s_new, sp.sqrt(q) - p)]
     return T2, f2, back
 
-def _torsion_realise(T, p, pts, taus, Y, bound=24, verbose=False):
-    """div realisation by torsion on an elliptic curve with one place at
-    infinity (deg q = 3): order search for [P - oo] and additive Miller
-    functions with div = m P - m oo.  Returns [(coeff, pair)] or None."""
-    g = pts[0][0]
-    q = T.q
-    if sp.degree(q, g) != 3 or not q.free_symbols <= {g}:
+def _qcoords(conv, e):
+    """The coordinates over Q of a constant in the field of conv: on the
+    power basis of the primitive element, (1, i) for QQ_I, (1) for QQ."""
+    a = conv(e)
+    if hasattr(a, 'to_list'):
+        return [sp.QQ.to_sympy(z) for z in reversed(a.to_list())]
+    if hasattr(a, 'x'):
+        return [sp.QQ.to_sympy(a.x), sp.QQ.to_sympy(a.y)]
+    return [sp.QQ.to_sympy(a)]
+
+
+def _torsion_realise(T, pending, Y, bound=24, verbose=False):
+    """Algorithm 3(d): the residue divisor of the pending primes
+    [(p, pts, taus)] on an elliptic curve with one place at infinity (deg q
+    = 3, constant coordinates).  A place whose class [P - oo] is torsion of
+    order mu is realised on its own by its Miller function; the residues of
+    the remaining places are decomposed over a Q-basis (beta_j) of their
+    Q-span, tau_P = sum_j n_Pj beta_j with n_Pj in Z, so that the divisor
+    is sum_j beta_j D_j with D_j = sum_P n_Pj (P - oo) of degree 0, and
+    each D_j is realised by the group law: S_j = sum_P n_Pj P, mu_j the
+    order of S_j (1 when S_j = oo), and _ell_sum on mu_j D_j gives u_j with
+    div(u_j) = mu_j D_j, recorded with coefficient beta_j/mu_j.  Returns
+    [(coefficient, pair)] or None (a class of order > bound, no cubic
+    model, or a place with non-constant coordinates)."""
+    g, q = pending[0][1][0][0], T.q
+    if sp.degree(q, g) != 3 or not q.free_symbols <= {g} or any(pts[0][0] != g for _, pts, _ in pending):
         return None
-    if any(sp.sympify(rho).free_symbols or sp.sympify(yv).free_symbols
-           for _, rho, yv in pts):
+    places = [(pt, tau) for _, pts, taus in pending for pt, tau in zip(pts, taus) if tau != 0]
+    consts = [sp.sympify(z) for pt, tau in places for z in (pt[1], pt[2], tau)]
+    if any(z.free_symbols for z in consts):
         return None
-    conv = _field_for(_alg_atoms([sp.sympify(z) for _, rho, yv in pts for z in (rho, yv)]
-                                 + sp.Poly(q, g).all_coeffs()))
+    conv = _field_for(_alg_atoms(consts + sp.Poly(q, g).all_coeffs()))
     to_m, add, c = _ell_ops(q, g, conv)
-    out = []
-    for (gv, rho, yv), tau in zip(pts, taus):
-        if tau == 0:
-            continue
-        P = to_m((rho, yv))
-        m, certified = _torsion_order(q, g, P, rho, yv, conv, add, c, bound)
-        if m is None:
+
+    def realise(terms):
+        """(mu, u) with div(u) = mu * sum n (P - oo) for terms = [(P, n)], or None"""
+        S = None
+        for P, n in terms:
+            for _ in range(abs(n)):
+                S = add(S, P if n > 0 else (P[0], -P[1]))
+        mu = 1 if S is None else _torsion_order(q, g, S, conv, add, c, bound)
+        if mu is None:
             return None
-        if verbose and certified:
-            print(f"      (order {m} certified by the division polynomial psi_{m})")
-        u0, u1 = _miller(q, g, Y, P, m, conv, add, c)
-        out.append((sp.nsimplify(tau / m, [sp.sqrt(3)]), (u0, u1)))
+        return mu, _ell_sum(q, g, Y, [(P, mu * n) for P, n in terms], conv, add, c)[1]
+
+    out, rest = [], []
+    for pt, tau in places:
+        P = to_m((pt[1], pt[2]))
+        got = realise([(P, 1)])
+        if got is None:
+            rest.append((pt, P, tau))
+            continue
+        out.append((tau / got[0], got[1]))
         if verbose:
-            print(f"      torsion: [P - oo] of order {m} at ({rho}, {yv}); "
-                  f"Miller logand with coefficient {sp.nsimplify(tau/m, [sp.sqrt(3)])}")
+            print(f"      torsion: [P - oo] of order {got[0]} at ({pt[1]}, {pt[2]}); "
+                  f"Miller logand with coefficient {tau / got[0]}")
+    if rest:
+        rows = [_qcoords(conv, tau) for _, _, tau in rest]
+        d = max(len(r) for r in rows)
+        A = sp.Matrix([r + [0] * (d - len(r)) for r in rows]).T   # column i: the residue of rest[i]
+        Rr, piv = A.rref()                                        # A[:, i] = sum_j Rr[j, i] A[:, piv[j]]
+        for j, k in enumerate(piv):
+            N = sp.ilcm(1, *[z.q for z in Rr.row(j)])
+            ns = [int(N * Rr[j, i]) for i in range(len(rest))]
+            terms = [(P, n) for (_, P, _), n in zip(rest, ns) if n]
+            got = realise(terms)
+            if got is None:
+                return None
+            beta = rest[k][2] / N
+            out.append((beta / got[0], got[1]))
+            if verbose:
+                dv = ' + '.join(f"{n}*({pt[1]}, {pt[2]})" for (pt, _, _), n in zip(rest, ns) if n)
+                print(f"      torsion: the divisor {dv} - ({sum(ns)}) oo has order {got[0]}; "
+                      f"logand with coefficient {beta / got[0]}")
     return out
 
 
@@ -2154,12 +2202,25 @@ def parallel_integrate_mixed(f, T, bounds=None, extension=None, verbose=False,
     def failed(r_):
         return isinstance(r_, tuple) and r_[0] in (
             "failed", "needs torsion realisation (Parts I--II, milestone iii)")
+    # a single generator g over the curve with Dg = r(g) != 1 -- a flattened
+    # root (Lemma 3.2) or the parameter of a parametrised conic -- is rescaled
+    # to d/dg (Lemma 3.4): int f dx = int (f/r) dg with the same antiderivative,
+    # and the tower is the setting of Part I (exact bounds, Prop. 9.2(b))
+    if len(T.gens) == 1 and T.q is not None:
+        g0, d0 = T.gens[0], T.derivs[0]
+        r0 = d0[0]
+        if r0 != 1 and all(c == 0 for c in d0[1:]) and r0.free_symbols <= {g0}:
+            if verbose:
+                print(f"  single generator {g0} with D{g0} = {r0}: rescaled to d/d{g0} (Lemma 3.4)")
+            T = Tower([g0], [(sp.S(1),)], T.q, T.m)
+            f = tuple(sp.cancel(c / r0) for c in f)
     if not model_changed:
         _FIELDS.clear(); _CONVS.clear()          # the number fields are those of this integrand
     gq = [g for g in T.gens if T.q is not None and T.q.free_symbols <= {g}]
     const_q = bool(gq) and all(c.free_symbols == set() for c in sp.Poly(T.q, gq[0]).all_coeffs())
     is_conic = T.m == 2 and const_q and sp.degree(T.q, gq[0]) == 2
-    is_quartic = T.m == 2 and const_q and sp.degree(T.q, gq[0]) == 4
+    is_quartic = (T.m == 2 and const_q and sp.degree(T.q, gq[0]) == 4
+                  and sp.sqrt(sp.LC(T.q, gq[0])).is_rational)    # two rational places at infinity
     r = _pim(f, T, bounds, extension, verbose, split_specials, special_exp, model_changed,
              allow_split=split_first or not (is_conic and not model_changed))
     if not model_changed and failed(r) and bounds is None:
@@ -2447,6 +2508,8 @@ def _analyse(f, T, extension=None, verbose=False):
                             det_logs.append(got)
                     continue
             taus = [_resfmt(_reduce_at(texpr, pt, Y)) for pt in pts]
+            if any(sp.sympify(t).has(sp.zoo, sp.nan) for t in taus):
+                return ("failed", "residue undefined at the place", p)
             if verbose:
                 if q is None:
                     print(f"      residues {taus}")
@@ -2538,8 +2601,12 @@ def _analyse(f, T, extension=None, verbose=False):
         if unrealised:
             return ("needs torsion realisation (Parts I--II, milestone iii)", unrealised)
     if torsion and m == 2:
-        # the divisor may be realisable only jointly over several primes
-        got = _realise_joint(T, torsion, Y, verbose)
+        # the divisor may be realisable only jointly over several primes:
+        # by torsion on a cubic model (Algorithm 3(d)), else by the norm
+        # search over the product of the primes
+        got = _torsion_realise(T, torsion, Y, verbose=verbose)
+        if got is None:
+            got = _realise_joint(T, torsion, Y, verbose)
         if got is not None:
             det_logs.extend(got)
             torsion = []
