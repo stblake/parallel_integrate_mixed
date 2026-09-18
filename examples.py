@@ -212,6 +212,23 @@ run("R3 1/(x (log(x)^2+1)): unequal residues over t^2+1 in the log variable",
     (1/(x*(t**2 + 1)), S(0)), Tower([x, t], [(1, 0), (1/x, 0)]), 'integral',
     surface=1/(x*(sp.log(x)**2 + 1)), subs={t: sp.log(x)})
 
+# R4-R5: a deeper pole over a constant-coefficient prime of a transcendental
+# tower whose canonical residue lies in kappa(P) but not in K: -x/2 mod x^2+1
+# is the constant -+i/2 at the two places, realised as before by the principal
+# primes (a false 'not elementary' certificate until 2026-09-17); R5 is the
+# same on the parametrised conic of log(x + sqrt(x^2-1))/x^2 (the WL port's
+# route for arccosh(x)/x^2).
+from build_tower import build_tower
+from parallel_mixed import conic_to_line
+F4 = t/(1 + x**2) + sp.atan(x)
+run("R4 D[log(x)/(1+x^2) + arctan x] on {x, log x}: double pole at x^2+1, residues -+i/2 in kappa(P)",
+    (sp.cancel(sp.diff(F4, x) + sp.diff(F4, t)/x), S(0)), Tower([x, t], [(1, 0), (1/x, 0)]), 'integral',
+    surface=sp.diff(F4.subs(t, sp.log(x)), x), subs={t: sp.log(x)})
+T5, f5, back5 = build_tower(sp.log(x + sp.sqrt(x**2 - 1))/x**2, x)
+T5, f5, back5b = conic_to_line(T5, f5)
+run("R5 log(x+sqrt(x^2-1))/x^2 on the parametrised conic w = y/(x-1): residues -+i at w^2+1 from a double pole",
+    f5, T5, 'integral', surface=sp.log(x + sp.sqrt(x**2 - 1))/x**2, subs=back5b + back5)
+
 
 # ============================================ surface forms (build_tower.py)
 from build_tower import integrate_surface
@@ -257,6 +274,9 @@ runS("S17 sqrt(1 + sec x tan x)  (cubic model: the residue divisor is 2-torsion,
      sp.sqrt(1 + sp.sec(x)*sp.tan(x)))
 runS("S18 sqrt(x + sqrt(1 - x^2)): not elementary  (nested radical over the conic: (R4), rescaled to d/dw, holomorphic remainder)",
      sp.sqrt(x + sp.sqrt(1 - x**2)), 'not elementary')
+runS("S19 sqrt(x) arcsin(sqrt(x+1))  (Euler parameter w = sqrt x + sqrt(x+1), no radical; real nowhere, the sign convention of x > 0)",
+     sp.sqrt(x)*sp.asin(sp.sqrt(x + 1)))
+runS("S20 arcsin(sqrt(x+1))/sqrt x", sp.asin(sp.sqrt(x + 1))/sp.sqrt(x))
 
 # ================================================================ m >= 3
 # radicals of degree m >= 3 (elements on the Trager basis w_i = y^i/E_i):

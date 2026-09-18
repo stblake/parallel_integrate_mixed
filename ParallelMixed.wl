@@ -1422,24 +1422,22 @@ BuildTower[integrand_, x_Symbol] := Module[
     expr = (expr /. RadRules[q, Y, m]) /. {Y -> yw, gq -> gw};
     q = None; Y = Unique["Y"]; T = Tower[gens, derivs, q, m];
     True];
-  (* sqrtNormalize: Power[base, k/2] with a rational-function base num/den, or
-     a polynomial base with square factors: num den = sq^2 sf with sf
-     squarefree, so base^(k/2) = sq^k sf^(k/2) / den^k; a constant sf means
-     the root was not a radical at all. *)
-  (* rootNormalize: Power[base, k/mr] with a rational-function base num/den, or a
+  (* rootNormalize[base, k/mr]: a rational-function base num/den, or a
      polynomial base with mr-th-power factors: num den^(mr-1) = sq^mr sf with sf
      mr-th-power-free, base^(k/mr) = sq^k sf^(k/mr) / den^k; the signs of sq
      and den are chosen at the sample point so that the identity holds for the
      principal branches (for odd mr a negative sq is moved into sf as
-     (-sq)^mr (-sf), and den is made positive). *)
-  rootNormalize[pw_] := Module[{bs, ex, mr, num, den, sfl, sq = 1, sf = 1, pure, rest, const, sqf, dsgn},
-    {bs, ex} = List @@ pw; mr = Denominator[ex];
+     (-sq)^mr (-sf), and den is made positive).  The base and the exponent are
+     passed separately: Power[base, 1/2] would be evaluated before the function
+     sees it (Sqrt[a/4] -> Sqrt[a]/2 leaves a Times, not a Power). *)
+  rootNormalize[bs_, ex_] := Module[{mr, num, den, sfl, sq = 1, sf = 1, pure, rest, const, sqf, dsgn},
+    mr = Denominator[ex];
     {num, den} = {Numerator[Together[bs]], Denominator[Together[bs]]};
     If[OddQ[mr] && signFix[den] =!= den, {num, den} = {-num, -den}];
     sfl = FactorSquareFreeList[Expand[num den^(mr - 1)]];
     Do[sq *= fc[[1]]^Quotient[fc[[2]], mr]; sf *= fc[[1]]^Mod[fc[[2]], mr], {fc, sfl}];
     const = Cancel[Expand[num den^(mr - 1)]/(sq^mr sf)];
-    If[! FreeQ[const, x] || ! FreeQ[const, Alternatives @@ Join[gens, {Y}]], Return[pw]];
+    If[! FreeQ[const, x] || ! FreeQ[const, Alternatives @@ Join[gens, {Y}]], Return[bs^ex]];
     sqf = signFix[sq];
     If[sqf =!= sq && OddQ[mr], const = -const];
     sq = sqf;
@@ -1546,7 +1544,7 @@ BuildTower[integrand_, x_Symbol] := Module[
             With[{av = Quiet[N[(arg /. Y -> If[q === None, Y, Sqrt[q]]) /. sample]]},
               If[NumericQ[av] && Re[av] < 0, icoef = -icoef]]];
           (* normalise Sqrt[rad] = rcoef Sqrt[sf] with sf a squarefree polynomial *)
-          With[{nrm = rootNormalize[Power[rad, 1/2]]},
+          With[{nrm = rootNormalize[rad, 1/2]},
             With[{rts = Cases[{nrm}, Power[b_, 1/2] /; ! FreeQ[b, Alternatives @@ Join[gens, {Y}]] :> b, Infinity]},
               If[rts =!= {},
                 sf = First[rts]; rcoef = Cancel[nrm/Sqrt[sf]];
@@ -1573,7 +1571,7 @@ BuildTower[integrand_, x_Symbol] := Module[
         record[tnew, c /. Y -> q^(1/m)];
         expr = expr /. c -> tnew,
       Power[_, _Rational],
-        With[{nrm = rootNormalize[c]},
+        With[{nrm = rootNormalize[c[[1]], c[[2]]]},
           If[nrm =!= c, expr = expr /. c -> nrm; Continue[]]];
         {base, r} = List @@ c; mm = Denominator[r];          (* the degree of this root *)
         (* flattenable root: base = coef g + rest, coef constant, rest free of g  (Lemma 3.2) *)
@@ -1901,7 +1899,7 @@ iPIM[f0_, T_, OptionsPattern[ParallelIntegrateMixed]] := Module[
    Y, f, dlcm, detLogs = {}, unkLogs = {}, denv = 1, fl, p, mult, branch, eta, delta, special,
    eP, vP, Dp, tp, texpr, pts, taus, cert, done, seen, cand, rem, ld, nb, db, monos, cs0, cs1,
    V, EE, betas, eqs, unks, sol, sub, frees, y, surf, I0, split = OptionValue["SplitSpecials"], splittable, newLogs, PP, rts, torsion = {}, got, tinf, lower, nonconst, units = {}, unitsComplete = True, uu0, certd, gammas, B, r2, g0, sunits, sols, uuS, sexp = OptionValue["SpecialExponent"], gstar, a2, b2, c2, disc, s2, s, ok, pend, uu, tv,
-   pendingClasses = {}, rc, gDir, classes, principal, groups, found, unrealised, sysK, neq, A, key, unitsBase, sunitsAll, spec, tau, cv},
+   pendingClasses = {}, rc, gDir, classes, principal, groups, found, unrealised, sysK, neq, A, key, unitsBase, sunitsAll, spec, tau, cv, tauHi},
   Y = Unique["y"];
   nc = If[q === None, 1, T["n"]];                      (* coordinates carrying the integrand *)
   f = TPad[T, f0]; f = Table[If[i > nc, 0, Can[f[[i]]]], {i, T["n"]}];
@@ -1932,6 +1930,7 @@ iPIM[f0_, T_, OptionsPattern[ParallelIntegrateMixed]] := Module[
       Continue[]];
     If[verbose, Print["  (", p, "): ", If[branch, "branch", "unramified"], ", delta = ", delta,
         ", v_P(f) = ", vP, If[vP > -delta, "  [sub-critical]", ""]]];
+    tauHi = None;            (* canonical residue of a deeper pole over a constant-coefficient prime *)
     If[vP < -delta,
       denv *= p^Ceiling[(-vP - delta)/eP];
       If[q === None && ! branch,
@@ -1943,10 +1942,12 @@ iPIM[f0_, T_, OptionsPattern[ParallelIntegrateMixed]] := Module[
         tau = If[gDir =!= None, CanonicalResidueField[T, f, p, gDir, delta, verbose], None];
         If[tau =!= None && ! IsZero[tau],
           If[verbose, Print["      canonical residue at order ", -vP, ": ", tau]];
-          cv = CertifyNonconstant[tau, gens];
-          Which[cv === True, Throw[{"not elementary", p, tau}, "PIM"],
-                cv === Undecided, Throw[{"failed", "residue constancy undecided", p, tau}, "PIM"],
-                True, AppendTo[detLogs, {tau, TScalar[T, p]}]]],   (* log(p), coefficient tau *)
+          If[ConstDir[T, p] =!= None,
+            tauHi = tau,       (* kappa(P) is algebraic over F: the residues at the places over p, below *)
+            cv = CertifyNonconstant[tau, gens];
+            Which[cv === True, Throw[{"not elementary", p, tau}, "PIM"],
+                  cv === Undecided, Throw[{"failed", "residue constancy undecided", p, tau}, "PIM"],
+                  True, AppendTo[detLogs, {tau, TScalar[T, p]}]]]],   (* log(p), coefficient tau *)
       (* deep residues (Proposition 7.6, constant-coefficient case: n = 1, D = d/dx) *)
       If[delta == 1 && ! branch && q =!= None && Length[gens] == 1 && T["derivs"][[1]] === TUnit[T, 0],
         pts = PointsOver[T, p];
@@ -1960,11 +1961,12 @@ iPIM[f0_, T_, OptionsPattern[ParallelIntegrateMixed]] := Module[
           If[AnyTrue[taus, # =!= 0 &],
             got = If[m == 2, RealisePoints[T, p, pts, taus, Y, verbose], RealiseAtPoints[T, p, pts, taus, verbose]];
             If[got === None, AppendTo[torsion, {p, pts, taus}], detLogs = Join[detLogs, got]]]]]]];
-    If[vP == -delta,
-      (* tau_P = e (f h / Dh)|_P with h = p *)
-      Dp = TowerD[T, TScalar[T, p]];
-      tp = If[q =!= None, TDiv[T, Pscale[eP p, f], Dp], {Can[eP p f[[1]]/Dp[[1]]], 0}];
-      texpr = ToY[T, tp, Y];
+    If[vP == -delta || tauHi =!= None,
+      (* tau_P = e (f h / Dh)|_P with h = p, or the canonical residue of the deeper pole *)
+      If[tauHi =!= None, tp = {tauHi, 0}; texpr = tauHi,
+        Dp = TowerD[T, TScalar[T, p]];
+        tp = If[q =!= None, TDiv[T, Pscale[eP p, f], Dp], {Can[eP p f[[1]]/Dp[[1]]], 0}];
+        texpr = ToY[T, tp, Y]];
       If[branch, Throw[{"failed", "critical branch residue", p}, "PIM"]];
       pts = PointsOver[T, p];
       (* a prime of degree > 4, and every constant-coefficient prime when

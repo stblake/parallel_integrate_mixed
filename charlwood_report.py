@@ -11,7 +11,7 @@ block at the foot) and charlwood_numbers.tex (the macros \tpm{P1}, \tfr{P1},
 \tax{P1} for the seconds, \spm{P1}, \sfr{P1}, \sax{P1} for the status marks,
 \npm, \nfr, \nax for the counts of verified integrals, \totpm, \meanpm, \medpm
 (and \totfr ..., \totax ...) for the total, mean and median seconds of each
-system over the times shown, \tsf{A1} for the seconds of the split-first
+system over the times shown, \wax{P3} for AXIOM's wall-clock seconds whatever the outcome, \tsf{A1} for the seconds of the split-first
 experiment), and prints a plain-text summary.
 """
 import os, sys, json, statistics
@@ -150,7 +150,9 @@ def main():
         for label, r in sf.items():
             val = "$>300$" if r.get("status") == "timeout" else fmt_time(r.get("time"))
             fh.write(f"\\expandafter\\def\\csname tsf@{label}\\endcsname{{{val}}}\n")
-        for tag in ("tpm", "tfr", "tax", "spm", "sfr", "sax", "tsf"):
+        for label, a in ax.items():        # \wax{P3}: AXIOM's wall-clock seconds, shown or not
+            fh.write(f"\\expandafter\\def\\csname wax@{label}\\endcsname{{{fmt_time(a.get('wall'))}}}\n")
+        for tag in ("tpm", "tfr", "tax", "spm", "sfr", "sax", "tsf", "wax"):
             fh.write(f"\\newcommand{{\\{tag}}}[1]{{\\csname {tag}@#1\\endcsname}}\n")
         for name, d in (("npm", py), ("nfr", fr), ("nax", ax)):
             n = sum(1 for l, _ in CHARLWOOD if d.get(l, {}).get("status") == "integral")
