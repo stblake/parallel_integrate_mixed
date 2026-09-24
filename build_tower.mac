@@ -1,0 +1,429 @@
+/* build_tower.mac -- automatic tower construction for parallel_mixed.mac, the Maxima
+   port of build_tower.py.
+
+       integrate_surface(expr, x)   ->  the integral of expr dx, or a status list, in x
+       build_tower(expr, x)         ->  [T, pair, back]
+
+   Processing is innermost-first until the integrand is a rational function of the
+   generators and y (see build_tower.py for the rules: log/atan/atanh primitives,
+   asin/acos/asinh/acosh through the radical, exp/tan/cot/tanh/coth monomials, the
+   sin/cos/sec/csc families through a tangent with the parity rules, flattened roots
+   (Lemma 3.2), the simple radical y^m = base, the Euler parametrisation of a conic).
+
+   Maxima specifics: exponentials are held as the placeholder pm_exp(a) while the tower
+   is built (Maxima simplifies %e^(b*log(a)) back to a^b); the helpers defined inside
+   build_tower see its state by dynamic scoping (the nonlocal closures of the Python). */
+
+pm_gen_heads: [log, pm_exp, tan, cot, tanh, coth, atan, acot, atanh, acoth, asin, acos, asinh, acosh, asec, acsc, asech, acsch]$
+pm_debug_tower: false$      /* true: print the expression at every step of build_tower */
+pm_trig: [sin, cos, sec, csc]$
+pm_hyp: [sinh, cosh, sech, csch]$
+/* inverse functions with a rational derivative: D t = coef(a) D a */
+pm_inv_rational(head, a) := if head = atan then 1/(1 + a^2) else if head = acot then -1/(1 + a^2)
+  else if head = atanh then 1/(1 - a^2) else if head = acoth then 1/(1 - a^2) else false$
+/* inverse functions with a derivative through a radical: [rad(a), coef(a), abs?] with
+   D t = coef(a) D a / sqrt(rad(a)); abs marks a derivative with |a| */
+pm_inv_radical(head, a) :=
+  if head = asin then [1 - a^2, 1, false] else if head = acos then [1 - a^2, -1, false]
+  else if head = asinh then [1 + a^2, 1, false] else if head = acosh then [a^2 - 1, 1, false]
+  else if head = asec then [a^2 - 1, 1/a, true] else if head = acsc then [a^2 - 1, -1/a, true]
+  else if head = asech then [1 - a^2, -1/a, false] else if head = acsch then [1 + a^2, -1/a, true]
+  else false$
+
+/* every subexpression satisfying pred (unique, inner ones included) */
+pm_subexprs(e, pred) := block([out: []],
+  pm_se_walk(z) := (if not atom(z) then (if pred(z) then out: cons(z, out), map(pm_se_walk, args(z))), false),
+  pm_se_walk(e), unique(out))$
+/* the function applications f(a) with f a symbol head (sin(x), log(x), pm_exp(a), ...) */
+pm_funcs(e) := pm_subexprs(e, lambda([z], symbolp(op(z)) and length(args(z)) = 1 and member(op(z), append(pm_gen_heads, pm_trig, pm_hyp, [lambert_w]))))$
+/* powers with a rational non-integer exponent (radicals) */
+pm_radicals(e) := pm_pows(e)$
+/* the size of an expression (the counterpart of count_ops) */
+pm_size(e) := if atom(e) then 1 else 1 + apply("+", map(pm_size, args(e)))$
+/* replace every subexpression z with pred(z) by fn(z), innermost first */
+pm_replace(e, pred, fn) := if atom(e) then e
+  else block([z: apply(op(e), map(lambda([a], pm_replace(a, pred, fn)), args(e)))], if pred(z) then fn(z) else z)$
+/* apply the op of e to new arguments, keeping subscripted/quoted forms simple */
+pm_rebuild_op(e, newargs) := apply(op(e), newargs)$
+
+/* exponentials as the placeholder pm_exp: %e^a -> pm_exp(a); a^b with a non-rational
+   exponent involving x -> pm_exp(b log a) (general powers, e.g. x^x) */
+pm_exp_placeholders(e, x) := pm_replace(e,
+  lambda([z], not atom(z) and op(z) = "^" and (first(args(z)) = %e or (not ratnump(second(args(z))) and not freeof(x, second(args(z))) and not integerp(second(args(z)))))),
+  lambda([z], if first(args(z)) = %e then pm_exp(second(args(z))) else pm_exp(second(args(z))*log(first(args(z))))))$
+pm_exp_back(e) := subst(lambda([a], exp(a)), pm_exp, e)$
+
+/* a rational function as expanded numerator over expanded denominator: no leading minus
+   sign for sqrt to pull %i out of (ratsimp writes 2u^2 - u^4 as -(u^4 - 2u^2), and
+   sqrt(-(...)) becomes %i sqrt(...), flipping the radicand: Charlwood A32) */
+pm_pos_form(e) := block([r: rat(e)], ratdisrep(ratnumer(r))/ratdisrep(ratdenom(r)))$
+
+/* rational function of the variables? */
+rational_in(e, vars_) := block([nd: num_den(e)],
+  polynomialp(nd[1], vars_, lambda([c], free_of_all(vars_, c))) and polynomialp(nd[2], vars_, lambda([c], free_of_all(vars_, c))))$
+
+/* every power q^(k/m') of the radicand with m' | m -> the radical symbol Y, Y^m = q:
+   q^(k/m') = Y^(k m/m') (for m = 2 in the reduced form q^k Y) */
+rad_rules(e, q, Y, m) := if q = false then e
+  else if m = 2 then pm_replace(e,
+    lambda([z], pm_pow_parts(z) # false and denom(pm_pow_exp(z)) = 2 and expand(pm_pow_base(z) - q) = 0),
+    lambda([z], q^(pm_pow_exp(z) - 1/2)*Y))
+  else pm_replace(e,
+    lambda([z], pm_pow_parts(z) # false and mod(m, denom(pm_pow_exp(z))) = 0 and expand(pm_pow_base(z) - q) = 0),
+    lambda([z], Y^(pm_pow_exp(z)*m)))$
+
+/* the numeric value of a constant expression at the sample rules: [re, im] or false */
+pm_numval(e, sample) := block([v],
+  v: errcatch(rectform(float(sublis(sample, e)))),
+  if v = [] then return(false),
+  v: first(v),
+  if not (numberp(realpart(v)) and numberp(imagpart(v))) then false else [float(realpart(v)), float(imagpart(v))])$
+
+/* sqrt(sq^2) = |sq|: return sq with the sign it has at the sample point */
+sign_fix(sq, sample) := block([v],
+  if sample = [] then return(sq),
+  v: pm_numval(sq, sample),
+  if v # false and abs(v[2]) < 1.0e-12*max(1.0, abs(v[1])) and v[1] < 0 then -sq else sq)$
+
+/* root_normalize(base, ex, vars_, sample): base^(k/m) with a rational-function base
+   num/den, or a polynomial base with m-th-power factors: num den^(m-1) = sq^m sf with sf
+   m-th-power-free, base^(k/m) = sq^k sf^(k/m) / den^k, the signs of sq and den chosen at
+   the sample point so that the identity holds for the principal branches.  The base
+   and the exponent are passed separately (the power would be re-simplified). */
+root_normalize(base, ex, vars_, sample, excl) := block([m: denom(ex), nd, num, den, sfl, sq: 1, sf: 1, const, sqf, dsgn, pure: 1, rest_],
+  nd: num_den(base), num: nd[1], den: nd[2],
+  if oddp(m) and sample # [] and sign_fix(den, sample) # den then (num: -num, den: -den),
+  sfl: sqf_factors(expand(num*den^(m - 1)), vars_),
+  for fl in sfl do (sq: sq*fl[1]^floor(fl[2]/m), sf: sf*fl[1]^mod(fl[2], m)),
+  const: canon(expand(num*den^(m - 1))/(sq^m*sf)),
+  sqf: sign_fix(sq, sample),
+  if sqf # sq and oddp(m) then const: -const,
+  sq: sqf,
+  dsgn: if evenp(m) and sample # [] and sign_fix(den, sample) # den then -1 else 1,
+  dsgn: dsgn^num(ex),
+  /* pure-root factors: a factor of the squarefree radicand that is itself a generator g
+     is split off as g^ex so that it flattens (Lemma 3.2) */
+  rest_: const,
+  for fl in factor_terms(sf, vars_) do
+    if fl[2] = 1 and symbolp(fl[1]) and member(fl[1], vars_) and fl[1] # excl and sign_fix(fl[1], sample) = fl[1] then pure: pure*fl[1]^ex   /* a generator, not the radical symbol y */
+    else rest_: rest_*fl[1]^fl[2],
+  sf: expand(rest_),
+  if free_of_all(vars_, sf) then ratsimp(dsgn*sq^(m*ex)*sf^ex/den^(m*ex))*pure
+  else ratsimp(dsgn*sq^(m*ex)/den^(m*ex))*pure*sf^ex)$
+
+/* a rational x0 at which every radicand and inverse-function argument of the integrand
+   is in its real domain; false if none of the candidates is */
+sample_point(expr, x) := block([rads, res: false, ok, v, hd],
+  rads: map(lambda([z], [pm_pow_base(z), denom(pm_pow_exp(z))]), pm_radicals(expr)),
+  sp_okay(x0) := block([ok: true, v, a, fs],
+    for bm in rads while ok do (
+      v: pm_numval(bm[1], [x = x0]),
+      if v = false or abs(v[2]) > 1.0e-12 or (if evenp(bm[2]) then v[1] <= 0 else v[1] = 0) then ok: false),
+    fs: pm_funcs(expr),
+    for f in fs while ok do (
+      hd: op(f), a: pm_numval(first(args(f)), [x = x0]),
+      if a = false or abs(a[2]) > 1.0e-12 then ok: false
+      else if member(hd, [asin, acos]) and not (-1 < a[1] and a[1] < 1) then ok: false
+      else if hd = acosh and not a[1] > 1 then ok: false
+      else if hd = atanh and not (-1 < a[1] and a[1] < 1) then ok: false
+      else if member(hd, [acoth, asec, acsc]) and not abs(a[1]) > 1 then ok: false
+      else if hd = asech and not (0 < a[1] and a[1] < 1) then ok: false
+      else if hd = acsch and a[1] = 0 then ok: false
+      else if hd = log and not a[1] > 0 then ok: false),
+    if ok then (v: pm_numval(expr, [x = x0]), if v = false or abs(v[2]) >= 1.0e-9 or abs(v[1]) >= 1.0e12 then ok: false),
+    ok),
+  for x0 in [1/2, 2, 1/3, 3, 3/2, 1/5, 5, -1/2, -2, 7/10, 3/10] while res = false do if sp_okay(x0) then res: x0,
+  res)$
+
+/* build_tower(integrand, x [, verbose]): [T, fpair, back] */
+build_tower(integrand, x, [rest]) := block(
+  [verbose, expr, gens, derivs, q: false, m: 2, Y: gensym("Y"), back: [], T, counter: 0, x0, sample: [], sym_, srf, vw, res, fpair, done],
+  verbose: if rest = [] then false else first(rest),
+  expr: pm_exp_placeholders(integrand, x),
+  gens: [x], derivs: [[1, 0]],
+  T: tower(gens, derivs, q, m),
+  x0: sample_point(expr, x),
+  sample: if x0 # false then [x = x0] else [],
+  /* the value of a new generator at the sample point, from its surface expression */
+  bt_record(sym_, srf) := block([v],
+    if sample # [] then (
+      v: pm_numval(pm_exp_back(srf), sample),
+      if v # false and abs(v[2]) < 1.0e-12 then sample: endcons(sym_ = bfloat(v[1]), sample)),
+    if q # false and not member(Y, map(lhs, sample)) and sample # [] then (
+      v: errcatch(bfloat(sublis(sample, q))^(1/m)),
+      if v # [] then sample: endcons(Y = first(v), sample))),
+  bt_new_sym(prefix) := (counter: counter + 1, concat(prefix, counter)),
+  bt_rebuild() := (T: tower(gens, derivs, q, m)),
+  bt_is_cand_arg(a) := block([vars_: append(gens, [Y]), aa: rad_rules(a, q, Y, m)],
+    rational_in(aa, vars_) and not free_of_all(vars_, aa)),
+  bt_to_tuple(a) := tower_from_Y(T, rad_rules(a, q, Y, m), Y),
+  /* --- Euler parametrisation of a conic when a second radical is demanded */
+  bt_euler_step() := block([found: false, P, cc, a2, b2, c2, alpha, w, gw, yw, Dw, w_surface, pt, g0, y0, Dg, num_, vw, new_derivs, ret: false],
+    if m # 2 then return(false),
+    for g in gens while not found do (
+      if not polynomialp(q, [g], lambda([c], freeof(g, c))) or poly_degree(q, g) # 2 or not const_coeffs_p(q, g, gens) then false
+      else (
+        cc: poly_coeffs(q, g), a2: cc[1], b2: cc[2], c2: cc[3],
+        alpha: sqrt(a2),
+        w: bt_new_sym('w),
+        if ratnump(alpha) then (
+          /* Euler's first substitution through the point at infinity, w = y + alpha g: the
+             LARGE root, positive for large positive g */
+          gw: canon((w^2 - c2)/(b2 + 2*alpha*w)),
+          yw: canon(w - alpha*gw),
+          Dw: tower_D(T, [alpha*g, 1]),
+          w_surface: sqrt(q) + alpha*g,
+          found: true)
+        else (
+          pt: rational_point(q, g),
+          if pt # false then (
+            g0: pt[1], y0: pt[2],
+            gw: canon((2*y0*w - (a2 + w^2)*g0 - b2)/(a2 - w^2)),
+            yw: canon(y0 + w*(gw - g0)),
+            Dg: derivs[pm_index(gens, g)],
+            num_: padd(pscale(g - g0, T@Dy), pscale(-1, pmul([-y0, 1], Dg, q))),
+            Dw: pscale(1/(g - g0)^2, num_),
+            w_surface: (sqrt(q) - y0)/(g - g0),
+            found: true)),
+        if found then (
+          /* the parameter must be positive on the domain: if w is negative at the sample
+             point, use -w instead */
+          if sample # [] then (
+            vw: pm_numval(w_surface, sample),
+            if vw # false and abs(vw[2]) < 1.0e-12*max(1.0, abs(vw[1])) and vw[1] < 0 then (
+              gw: subst(-w, w, gw), yw: subst(-w, w, yw),
+              Dw: [canon(-Dw[1]), canon(-Dw[2])],
+              w_surface: -w_surface)),
+          Dw: canon(sublis([Y = yw, g = gw], Dw[1] + Dw[2]*Y)),
+          new_derivs: makelist(if gens[i] = g then [Dw, 0] else [canon(sublis([Y = yw, g = gw], derivs[i][1] + derivs[i][2]*Y)), 0], i, 1, length(gens)),
+          /* earlier back rules may mention this radical's symbol Y: record what Y was */
+          back: endcons([Y, sqrt(q)], back),
+          back: endcons([w, w_surface], back),
+          bt_record(w, w_surface),
+          sample: sublist(sample, lambda([r], lhs(r) # Y)),
+          expr: sublis([Y = yw, g = gw], rad_rules(expr, q, Y, 2)),
+          gens: map(lambda([gg], if gg = g then w else gg), gens),
+          derivs: new_derivs,
+          q: false,
+          Y: gensym("Y"),
+          bt_rebuild(),
+          ret: true))),
+    ret),
+  /* --- trigonometric family through a tangent (parity rules first) */
+  bt_trig_step(a, hyper) := block([s: gensym("s"), c: gensym("c"), r: gensym("r"), trules, e1, e2, items: [], fs, bs_, f0, p_, b0, can_change, qs, got, bs, outer, u, qc, bc, tn, qr, Da, even, Dt, half, inner],
+    trules: if hyper then [sinh(a) = s, cosh(a) = c, tanh(a) = s/c, coth(a) = c/s, sech(a) = 1/c, csch(a) = 1/s]
+           else [sin(a) = s, cos(a) = c, tan(a) = s/c, cot(a) = c/s, sec(a) = 1/c, csc(a) = 1/s],
+    e1: expr, for tr in trules do e1: subst(rhs(tr), lhs(tr), e1),   /* sublis needs symbol left-hand sides */
+    /* sub-expressions not rational in (s, c) -- the bases of radicals and the arguments of
+       opaque functions -- are replaced by placeholders, innermost first */
+    e2: e1,
+    bt_opaque(e) := sort(sublist(pm_funcs(e), lambda([f], not free_of_all([s, c], f))), lambda([f1, f2], pm_size(f1) < pm_size(f2))),
+    bt_radbases(e) := sort(unique(map(pm_pow_base, sublist(pm_radicals(e), lambda([z], not free_of_all([s, c], pm_pow_base(z)))))), lambda([f1, f2], pm_size(f1) < pm_size(f2))),
+    while (fs: bt_opaque(e2), bs_: bt_radbases(e2), fs # [] or bs_ # []) do (
+      if fs # [] then (f0: first(fs), p_: gensym("o"), items: endcons([p_, first(args(f0)), op(f0)], items), e2: subst(p_, f0, e2))
+      else (b0: first(bs_), p_: gensym("b"), items: endcons([p_, b0, false], items), e2: subst(p_, b0, e2))),
+    bt_reduce_all(sub_var, rv, qq) := block([inner, outer, r1],
+      r1: errcatch(inner: map(lambda([it], pair_reduce(subst(rv, sub_var, it[2]), rv, qq)), items),
+                   outer: pair_reduce(subst(rv, sub_var, e2), rv, qq)),
+      if r1 = [] then false else [inner, outer]),
+    bt_rebuild_expr(e, parts, sub) := block([rep, e_new],
+      /* the placeholders -> the rebuilt inner expressions (any order; a placeholder may
+         occur inside another item) */
+      rep: makelist(items[i][1] = (if items[i][3] = false then pm_pos_form(subst(sub, parts[i])) else apply(items[i][3], [subst(sub, parts[i])])), i, 1, length(items)),
+      for k thru length(items) + 1 do (e_new: sublis(rep, e), if e_new = e then return(e), e: e_new),
+      e),
+    can_change: is(gens = [x] and a = x and freeof(x, e1) and q = false),
+    if can_change then (
+      /* odd in s: e2 = A(c) + B(c) s with s^2 = 1 - c^2 (cosh: c^2 - 1) */
+      qs: if hyper then c^2 - 1 else 1 - c^2,
+      got: bt_reduce_all(s, r, qs),
+      if got # false then (
+        bs: got[1], outer: got[2],
+        if every(lambda([b_], b_[2] = 0), bs) and outer[1] = 0 then (
+          u: bt_new_sym('u),
+          expr: bt_rebuild_expr(subst(u, c, (if hyper then 1 else -1)*outer[2]), map(first, bs), [c = u]),
+          gens: [u], derivs: [[1, 0]],
+          back: endcons([u, if hyper then cosh(a) else cos(a)], back),
+          bt_record(u, if hyper then cosh(a) else cos(a)),
+          bt_rebuild(),
+          return('done))),
+      /* odd in c: e2 = A(s) + B(s) c with c^2 = 1 - s^2 (cosh: 1 + s^2) */
+      qc: if hyper then 1 + s^2 else 1 - s^2,
+      got: bt_reduce_all(c, r, qc),
+      if got # false then (
+        bc: got[1], outer: got[2],
+        if every(lambda([b_], b_[2] = 0), bc) and outer[1] = 0 then (
+          u: bt_new_sym('u),
+          expr: bt_rebuild_expr(subst(u, s, outer[2]), map(first, bc), [s = u]),
+          gens: [u], derivs: [[1, 0]],
+          back: endcons([u, if hyper then sinh(a) else sin(a)], back),
+          bt_record(u, if hyper then sinh(a) else sin(a)),
+          bt_rebuild(),
+          return('done)))),
+    /* even in (s, c): t = tan a, s -> t r, c -> r with r^2 = 1/(1 + t^2) (tanh: 1/(1 - t^2)) */
+    tn: bt_new_sym('t),
+    qr: if hyper then 1/(1 - tn^2) else 1/(1 + tn^2),
+    Da: tower_D(T, bt_to_tuple(a)),
+    got: errcatch(bs: map(lambda([it], pair_reduce(sublis([s = tn*r, c = r], it[2]), r, qr)), items),
+                  outer: pair_reduce(sublis([s = tn*r, c = r], e2), r, qr)),
+    even: is(got # [] and every(lambda([b_], b_[2] = 0), bs) and outer[2] = 0),
+    if even then (
+      expr: bt_rebuild_expr(outer[1], map(first, bs), []),
+      Dt: map(lambda([d], canon((if hyper then 1 - tn^2 else 1 + tn^2)*d)), Da),
+      back: endcons([tn, if hyper then tanh(a) else tan(a)], back),
+      bt_record(tn, if hyper then tanh(a) else tan(a)))
+    else (
+      half: if hyper then [s = 2*tn/(1 - tn^2), c = (1 + tn^2)/(1 - tn^2)] else [s = 2*tn/(1 + tn^2), c = (1 - tn^2)/(1 + tn^2)],
+      expr: sublis(half, e1),
+      Dt: map(lambda([d], canon((if hyper then (1 - tn^2)/2 else (1 + tn^2)/2)*d)), Da),
+      back: endcons([tn, if hyper then tanh(a/2) else tan(a/2)], back),
+      bt_record(tn, if hyper then tanh(a/2) else tan(a/2))),
+    gens: endcons(tn, gens), derivs: endcons(Dt, derivs),
+    bt_rebuild(),
+    'done),
+  /* --- main loop */
+  done: false,
+  while not done do block([trig, f0, cands, cnd, nrm, base, r_, mm, g_fl, g, coef, rest_, u, Dbase, pos, Du, sub, degs, a, ap, Da, tn, head, rcoef: 1, icoef: 1, ir, rad, absQ, nd, num_, den_, sfl_, sq_, sf, dsgn_, cp, Dt],
+    if pm_debug_tower then printf(true, "    [tower] gens ~a, q ~a, expr ~a~%", string(gens), string(q), string(expr)),
+    /* trigonometric families first */
+    trig: sublist(pm_funcs(expr), lambda([f], member(op(f), append(pm_trig, pm_hyp)) and bt_is_cand_arg(first(args(f))))),
+    if trig # [] then (
+      f0: first(sort(trig, lambda([f1, f2], pm_size(f1) < pm_size(f2)))),
+      bt_trig_step(first(args(f0)), member(op(f0), pm_hyp)))
+    else (
+      cands: sublist(pm_funcs(expr), lambda([f], member(op(f), pm_gen_heads) and bt_is_cand_arg(first(args(f))))),
+      cands: append(cands, sublist(pm_radicals(expr), lambda([z], bt_is_cand_arg(pm_pow_base(z))))),
+      if cands = [] then done: true
+      else (
+        cnd: first(sort(cands, lambda([f1, f2], pm_size(f1) < pm_size(f2)))),
+        if pm_pow_parts(cnd) # false then (
+          base: pm_pow_base(cnd), r_: pm_pow_exp(cnd),
+          nrm: root_normalize(base, r_, append(gens, [Y]), sample, Y),
+          if nrm # cnd then expr: subst(nrm, cnd, expr)
+          else (
+            mm: denom(r_),
+            /* flattenable root (Lemma 3.2): c g + r with c a constant and r free of g */
+            g_fl: false,
+            for gg in gens while g_fl = false do
+              if polynomialp(base, [gg], lambda([c], freeof(gg, c))) and poly_degree(base, gg) = 1 and freeof(Y, base)
+                 and free_of_all(gens, poly_lc(base, gg)) then g_fl: gg,
+            if g_fl # false then (
+              g: g_fl,
+              coef: poly_lc(base, g),
+              rest_: subst(0, g, base),
+              u: bt_new_sym('u),
+              Dbase: tower_D(T, bt_to_tuple(base)),
+              pos: pm_index(gens, g),
+              Du: map(lambda([d], canon(d/(mm*u^(mm - 1)))), Dbase),
+              sub: [g = (u^mm - rest_)/coef],
+              derivs: makelist(map(lambda([dd], canon(sublis(sub, dd))), if i = pos then Du else derivs[i]), i, 1, length(gens)),
+              gens: map(lambda([gg], if gg = g then u else gg), gens),
+              if q # false then q: expand(sublis(sub, q)),
+              back: endcons([u, base^(1/mm)], back),
+              bt_record(u, (if q # false then subst(q^(1/m), Y, base) else base)^(1/mm)),
+              expr: pm_replace(expr, lambda([z], pm_pow_parts(z) # false and expand(pm_pow_base(z) - base) = 0),
+                               lambda([z], u^(mm*pm_pow_exp(z)))),
+              expr: sublis(sub, expr),
+              bt_rebuild())
+            else if q # false and expand(base - q) # 0 then (
+              if not bt_euler_step() then error("two unflattenable radicals:", q, "and", base))
+            else if q # false then (
+              if mod(m, mm) # 0 then error("roots of degree", m, "and", mm, "of the same radicand", q),
+              expr: rad_rules(expr, q, Y, m))
+            else (
+              if not polynomialp(base, gens, lambda([c], free_of_all(gens, c))) then error("radicand", base, "is not a polynomial in the generators"),
+              degs: unique(map(lambda([z], denom(pm_pow_exp(z))), sublist(pm_radicals(expr), lambda([z], expand(pm_pow_base(z) - base) = 0)))),
+              m: if length(degs) > 1 then apply(lcm, degs) else mm,
+              if some(lambda([fl], fl[2] >= m), sqf_factors(expand(base), gens)) then error("radicand", base, "is not", m, "-th-power-free"),
+              q: base,
+              if m > 2 then derivs: map(lambda([d], append(d, makelist(0, i, 1, m - 2))), derivs),
+              expr: rad_rules(expr, q, Y, m),
+              bt_rebuild(),
+              if sample # [] then (vw: errcatch(bfloat(sublis(sample, q))^(1/m)), if vw # [] then sample: endcons(Y = first(vw), sample)))))
+        else (
+          /* transcendental generator */
+          f0: cnd, a: first(args(f0)),
+          ap: bt_to_tuple(a),
+          Da: tower_D(T, ap),
+          tn: bt_new_sym('t),
+          head: op(f0),
+          rcoef: 1, icoef: 1,
+          ir: pm_inv_radical(head, a),
+          if ir # false then (
+            rad: ratsimp(ir[1]), icoef: ir[2], absQ: ir[3],
+            if absQ and sample # [] then (
+              vw: pm_numval(subst(if q # false then sqrt(q) else Y, Y, a), sample),
+              if vw # false and vw[1] < 0 then icoef: -icoef),
+            rad: rad_rules(rad, q, Y, m),
+            /* normalise sqrt(rad) = rcoef * sqrt(sf) with sf a squarefree polynomial */
+            nd: num_den(ratsimp(rad)), num_: nd[1], den_: nd[2],
+            sfl_: sqf_factors(expand(num_*den_), append(gens, [Y])),
+            sq_: 1, sf: 1,
+            for fl in sfl_ do (sq_: sq_*fl[1]^floor(fl[2]/2), sf: sf*fl[1]^mod(fl[2], 2)),
+            sf: expand(sf*canon(expand(num_*den_)/(sq_^2*sf))),
+            sq_: sign_fix(sq_, sample),
+            dsgn_: if sample # [] and sign_fix(den_, sample) # den_ then -1 else 1,
+            if not free_of_all(append(gens, [Y]), sf) then (
+              rcoef: canon(dsgn_*sq_/den_),                     /* sqrt(N/D) = sqrt(N D)/|D| */
+              if q = false then (
+                q: expand(sf), m: 2,
+                bt_rebuild(),
+                Da: tower_D(T, ap),
+                expr: rad_rules(expr, q, Y, m))
+              else if expand(sf - q) # 0 then (
+                if bt_euler_step() then head: 'retry
+                else error("the derivative of", f0, "needs the radical sqrt(", sf, ") but the tower has y^", m, "=", q))
+              else if m # 2 then error("the derivative of", f0, "needs sqrt(", sf, ") but the tower has the radical y^", m, "=", q))
+            else (
+              rcoef: canon(dsgn_*sq_*sqrt(sf)/den_),               /* no radical at all: D t is rational */
+              head: 'none)),
+          if head # 'retry then (
+            if head = log then Dt: tower_div(T, Da, ap)
+            else if pm_inv_rational(head, a) # false then Dt: tower_mul(T, Da, bt_to_tuple(pm_inv_rational(head, a)))
+            else if ir # false and head # 'none then (
+              cp: bt_to_tuple(icoef/rcoef),
+              Dt: tower_mul(T, tower_mul(T, Da, cp), [0, 1/q]))       /* 1/sqrt(q) = y/q (m = 2) */
+            else if head = 'none then Dt: tower_mul(T, Da, bt_to_tuple(icoef/rcoef))
+            else if head = pm_exp then Dt: map(lambda([d], canon(tn*d)), Da)
+            else if head = tan then Dt: map(lambda([d], canon((1 + tn^2)*d)), Da)
+            else if head = cot then Dt: map(lambda([d], canon(-(1 + tn^2)*d)), Da)
+            else if member(head, [tanh, coth]) then Dt: map(lambda([d], canon((1 - tn^2)*d)), Da)
+            else error("unsupported generator", f0),
+            gens: endcons(tn, gens), derivs: endcons(Dt, derivs),
+            back: endcons([tn, pm_exp_back(f0)], back),
+            bt_record(tn, if q # false then subst(q^(1/m), Y, f0) else f0),
+            expr: subst(tn, f0, expr),
+            bt_rebuild()))))),
+  expr: rad_rules(expr, q, Y, m),
+  if not rational_in(expr, append(gens, [Y])) or (q = false and not freeof(Y, expr)) then
+    error("could not reduce the integrand to a rational function of the generators and y:", expr),
+  fpair: tower_from_Y(T, expr, Y),
+  if q # false then back: endcons([Y, q^(1/m)], back),
+  if verbose then (
+    printf(true, "  tower: generators ~a with D = ~a~a~%", string(gens), string(derivs), if q # false then sconcat(", y^", m, " = ", string(q)) else ""),
+    printf(true, "  integrand: ~a~%", string(fpair))),
+  [T, fpair, back])$
+
+/* apply the back rules until nothing changes (they may introduce earlier symbols) */
+substitute_back(res, back) := block([new_],
+  for it thru length(back) + 2 do (
+    new_: res,
+    for on in reverse(back) do new_: subst(on[2], on[1], new_),
+    if new_ = res then return(res),
+    res: new_),
+  res)$
+
+/* the surface-form entry point: integrate an expression in x.  opts as for
+   parallel_integrate_mixed plus 'verify = true (numeric check of D(result) - integrand) */
+integrate_surface(integrand, x, [opts]) := block([verbose, verify, bt, T, fpair, back, res, surf, ok],
+  opts: if opts = [] then [] else first(opts),
+  verbose: assoc('verbose, opts, false), verify: assoc('verify, opts, false),
+  bt: build_tower(integrand, x, verbose),
+  T: bt[1], fpair: bt[2], back: bt[3],
+  res: parallel_integrate_mixed(fpair, T, sublist(opts, lambda([o], lhs(o) # 'verify))),
+  if listp(res) then return(map(lambda([r], if stringp(r) or listp(r) then r else substitute_back(r, back)), res)),
+  surf: substitute_back(res, back),
+  if verify then (
+    ok: every(lambda([p], block([fpprec: 30, v], v: errcatch(cabs(rectform(bfloat(subst(p, x, diff(surf, x) - integrand))))), v # [] and first(v) < 1b-20)), [1/3, 1/2, 2]),
+    if not ok then printf(true, "  WARNING: numeric verification of D(result) - integrand failed~%")),
+  surf)$

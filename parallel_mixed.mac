@@ -1,0 +1,2459 @@
+/* parallel_mixed.mac -- the Maxima port of parallel_mixed.py (the merged pipeline of
+
+     S. Blake, Parallel Integration over Simple Radical Extensions II: Mixed Towers).
+
+   One generic parallel_integrate_mixed covering m = 1 (no radical), m = 2 with q
+   squarefree over R = Q[g_1,...,g_k] (the radical anywhere in the tower), and m >= 3
+   with q m-th-power-free.  Elements are coordinate lists on the Trager basis
+   w_i = y^i/E_i: pairs [c0, c1] <-> c0 + c1*y for m <= 2, m-lists for m >= 3.
+
+   The function names are the Python names without the leading underscore, in the
+   order of parallel_mixed.py; the verbose trace lines are the same, so sessions can
+   be compared between the two.  Built-ins are used at the seams (rat/ratsimp with
+   algebraic:true for the canonical form, factor over an extension, resultant, taylor,
+   linsolve); every Maxima quirk met on the way has a named wrapper here and an entry
+   in MAXIMA_DIVERGENCES.md.  Files are loaded by pm_load.mac. */
+
+pm_have_file(f) := is(errcatch(file_search(f)) # [] and file_search(f) # false)$
+
+/* ---------------------------------------------------------------- canonical form */
+
+/* canon(e): the counterpart of sympy's cancel(e, extension=True) (_c): a cancelled
+   rational function of the generators with the algebraic constants (radicals of
+   integers, %i, tellrat'd kernels) reduced -- Maxima's ratsimp in algebraic mode. */
+canon(e) := if listp(e) then map(canon, e) else ratsimp(e)$
+
+/* numerator and denominator of a rational function as polynomials (general form) */
+num_den(e) := block([r: rat(e)], [ratdisrep(ratnumer(r)), ratdisrep(ratdenom(r))])$
+
+/* free of every generator in the list */
+free_of_all(gens, e) := apply(freeof, append(gens, [e]))$
+
+/* the atoms (symbols and constant kernels) of a general expression */
+pm_vars(e) := listofvars(e)$
+
+/* ---------------------------------------------------------------- pairs */
+
+padd(u, v) := map(lambda([a, b], canon(a + b)), u, v)$
+pscale(a, u) := map(lambda([b], canon(a * b)), u)$
+pmul(u, v, q) := [canon(u[1]*v[1] + q*u[2]*v[2]), canon(u[1]*v[2] + u[2]*v[1])]$
+pdiv(u, v, q) := block([n: canon(v[1]^2 - q*v[2]^2)],
+  [canon((u[1]*v[1] - q*u[2]*v[2])/n), canon((u[2]*v[1] - u[1]*v[2])/n)])$
+/* componentwise equality of two coordinate lists (tests) */
+pequal(u, v) := is(length(u) = length(v)) and every(lambda([a, b], is(canon(a - b) = 0)), u, v)$
+
+/* a primitive m-th root of unity in radicals (-1 for m = 2) */
+zeta_m(m) := if m = 2 then -1 else rectform(exp(2*%pi*%i/m))$
+
+/* the principal m-th root of a (factored) constant or expression -- sqrt for m = 2 --
+   with the real root for a negative rational and odd m */
+mroot(a, m) := block([f: factor(a), radexpand: all],
+  if m = 2 then sqrt(f)
+  else if ratnump(f) and f < 0 and oddp(m) then -(-f)^(1/m)
+  else f^(1/m))$
+
+/* all lists of s non-negative integers with sum n */
+compositions(n, s) := if s = 1 then [[n]]
+  else apply(append, makelist(map(lambda([r], cons(first_, r)), compositions(n - first_, s - 1)), first_, 0, n))$
+
+/* ---------------------------------------------------------------- number fields */
+
+/* alg_atoms(exprs): the algebraic atoms of constant expressions -- rationals dropped,
+   "+" and "*" recursed, b^(p/q) recorded as b^(1/q), everything else an atom (the
+   classification of sympy.polys.constructor._construct_algebraic). */
+alg_atoms(exprs) := block([atoms: []],
+  alg_atoms_walk(e) := if ratnump(e) then false
+    else if not atom(e) and member(op(e), ["+", "*", "/", "-"]) then map(alg_atoms_walk, args(e))
+    else if pm_pow_parts(e) # false
+      then (atoms: cons(pm_pow_base(e)^(1/denom(pm_pow_exp(e))), atoms), false)
+    else (atoms: cons(e, atoms), false),
+  for e in exprs do alg_atoms_walk(e),
+  unique(atoms))$
+
+/* the constant coefficients of polynomial expressions in gens */
+coeffs_in(gens, exprs) := block([cs: []],
+  for e in exprs do if e # 0 then cs: append(cs, map(second, monomial_rules(e, gens))),
+  cs)$
+
+/* monomial_rules(p, gens): the terms of the polynomial p in gens as [[exponent list],
+   coefficient] pairs (the counterpart of Poly(p, *gens).terms() / CoefficientRules) */
+monomial_rules(p, gens) := block([out: [], r: rat(p), dn],
+  dn: ratdisrep(ratdenom(r)),                        /* ratp_coeffs read the CRE numerator only */
+  if not free_of_all(gens, dn) then error("monomial_rules: not a polynomial in the generators:", p),
+  mono_walk(e, gs, ex) := if gs = [] then (if e # 0 then out: cons([reverse(ex), canon(e/dn)], out))
+    else block([cl: ratp_coeffs(rat(e), first(gs))],
+      if cl = [] then (if e # 0 then mono_walk(0, rest(gs), cons(0, ex)))
+      else for pc in cl do mono_walk(ratdisrep(second(pc)), rest(gs), cons(first(pc), ex))),
+  mono_walk(ratdisrep(ratnumer(r)), gens, []),
+  out)$
+
+/* ---------------------------------------------------------------- the Trager basis */
+
+/* radbasis(q, m, gens): the basis w_i = y^i/E_i (i < m) of the integral closure of
+   R = F[gens] in K(y), y^m = q, q m-th-power-free with squarefree decomposition
+   q = lc prod_l Q_l^l (Part I, Prop. 3.2):
+     E_i = prod_l Q_l^floor(i l/m),
+     w_i w_k = c_{ik} w_{(i+k) mod m},  c_{ik} = E_{i+k}/(E_i E_k)      (i + k < m)
+                                         c_{ik} = q E_{i+k-m}/(E_i E_k)  (i + k >= m),
+   both polynomials.  mul[i+1][k+1] = [index, coefficient]. */
+defstruct(pmradbasis(q, m, gens, Q, E, mul))$
+
+/* the squarefree factors of a polynomial as [[factor, multiplicity], ...] (sqfr walk),
+   constants dropped */
+sqf_factors(p, gens) := block([f: sqfr(expand(p)), out: []],
+  sqf_one(t) := if free_of_all(gens, t) then false
+    else if not atom(t) and op(t) = "-" then sqf_one(first(args(t)))
+    else if not atom(t) and op(t) = "^" then out: cons([first(args(t)), second(args(t))], out)
+    else out: cons([t, 1], out),
+  if not atom(f) and op(f) = "-" then f: first(args(f)),
+  if not atom(f) and op(f) = "*" then map(sqf_one, args(f)) else sqf_one(f),
+  reverse(out))$
+
+radbasis(q, m, gens) := block([B, Q: [], l, fac, E, mul, i, k, coef],
+  for fl in sqf_factors(q, gens) do (
+    fac: fl[1], l: fl[2],
+    if l >= m then error("radicand", q, "is not", m, "-th-power-free"),
+    if assoc(l, Q) = false then Q: cons([l, fac], Q) else Q: subst(assoc(l, Q)*fac, assoc(l, Q), Q)),
+  E: makelist(expand(apply("*", map(lambda([lq], second(lq)^floor(i*first(lq)/m)), Q))), i, 0, m - 1),
+  mul: makelist(makelist(
+    (coef: if i + k < m then E[i + k + 1]/(E[i + 1]*E[k + 1]) else q*E[i + k - m + 1]/(E[i + 1]*E[k + 1]),
+     [mod(i + k, m), expand(canon(coef))]), k, 0, m - 1), i, 0, m - 1),
+  new(pmradbasis(q, m, gens, Q, E, mul)))$
+
+radbasis_zero(B) := makelist(0, i, 1, B@m)$
+
+/* the list t times the basis element w_i */
+radbasis_times_w(B, t, i) := block([r: radbasis_zero(B), ic],
+  for k: 0 thru B@m - 1 do if t[k + 1] # 0 then (
+    ic: (B@mul)[k + 1][i + 1],
+    r[ic[1] + 1]: r[ic[1] + 1] + t[k + 1]*ic[2]),
+  map(canon, r))$
+
+radbasis_mult(B, u, v) := block([r: radbasis_zero(B), ic],
+  for i: 0 thru B@m - 1 do if u[i + 1] # 0 then
+    for k: 0 thru B@m - 1 do if v[k + 1] # 0 then (
+      ic: (B@mul)[i + 1][k + 1],
+      r[ic[1] + 1]: r[ic[1] + 1] + u[i + 1]*v[k + 1]*ic[2]),
+  map(canon, r))$
+
+/* M with M[j, k] = coordinate j of v w_k (multiplication by v) */
+radbasis_matrix(B, v) := block([cols: makelist(radbasis_times_w(B, v, k), k, 0, B@m - 1)],
+  apply(matrix, makelist(makelist(cols[k][j], k, 1, B@m), j, 1, B@m)))$
+
+/* u / v: the solution of M_v z = u by the adjugate of M_v (division-free) */
+radbasis_div(B, u, v) := block([M, L: 1, adj, det, m: B@m],
+  if every(lambda([z], z = 0), rest(v)) then return(map(lambda([z], canon(z/v[1])), u)),
+  M: radbasis_matrix(B, v),
+  for j thru m do for k thru m do L: lcm(L, second(num_den(M[j, k]))),
+  if L # 1 then M: matrixmap(lambda([z], canon(z*L)), M),
+  adj: adjoint(M), det: determinant(M),
+  makelist(canon(L*sum(adj[j, k]*u[k], k, 1, m)/det), j, 1, m))$
+
+radbasis_norm(B, v) := canon(determinant(radbasis_matrix(B, v)))$
+
+/* coordinates of an expression rational in the generators and Y, Y^m = q: numerator
+   and denominator reduced modulo Y^m - q, then the quotient in the basis (y^i = E_i w_i) */
+radbasis_from_Y(B, expr, Y) := block([nd: num_den(expr), m: B@m],
+  rb_tup(z) := block([P: remainder(expand(z), Y^m - B@q, Y)],
+    makelist(canon(ratcoef(P, Y, i)*(B@E)[i + 1]), i, 0, m - 1)),
+  radbasis_div(B, rb_tup(nd[1]), rb_tup(nd[2])))$
+
+radbasis_to_Y(B, u, Y) := sum(u[i + 1]*Y^i/(B@E)[i + 1], i, 0, B@m - 1)$
+
+/* ---------------------------------------------------------------- the tower */
+
+/* pmtower: gens with derivative lists; q = false means m = 1 (elements are pairs
+   [a, 0]); m = 2: pairs a + b y on the basis (1, y), q squarefree; m >= 3: m-lists on
+   the Trager basis w_i = y^i/E_i (q m-th-power-free).  analyses and lcp are the caches
+   of _pim and _lc_place (hashed by canonical keys, see cache_key). */
+defstruct(pmtower(gens, derivs, q, m, n, E, basis, Dy, Dw, Lam, analyses, lcp))$
+
+tower(gens, derivs, [rest]) := block([q, m, T, Qh, lam, i],
+  q: if length(rest) >= 1 then rest[1] else false,
+  m: if length(rest) >= 2 then rest[2] else 2,
+  T: new(pmtower(gens, [], q, if q = false then 1 else m, 0, [], false, false, [], [], [], [])),
+  T@n: if T@m <= 2 then 2 else T@m,
+  T@derivs: map(lambda([d], map(canon, tower_pad(T, d))), derivs),
+  T@E: makelist(1, i, 1, T@n),
+  if q # false and T@m = 2 then (
+    Qh: tower_Dhat(T, q),
+    T@Dy: [canon(Qh[2]/2), canon(Qh[1]/(2*q))],
+    T@Dw: [[0, 0], T@Dy])
+  else if q # false then (
+    T@basis: radbasis(q, T@m, gens),
+    T@E: (T@basis)@E,
+    Qh: tower_Dhat(T, q),
+    /* D w_i = Lambda_i w_i,  Lambda_i = (i/m) Dq/q - D E_i / E_i */
+    T@Lam: makelist(block([lam: pscale((i/T@m)/q, Qh)],
+      if (T@E)[i + 1] # 1 then lam: padd(lam, pscale(-1/(T@E)[i + 1], tower_Dhat(T, (T@E)[i + 1]))),
+      lam), i, 0, T@m - 1),
+    T@Dw: makelist(tower_D(T, tower_unit(T, i)), i, 0, T@m - 1),
+    T@Dy: (T@Dw)[2]),
+  T)$
+
+tower_pad(T, u) := if length(u) < T@n then append(u, makelist(0, i, 1, T@n - length(u))) else u$
+tower_zero(T) := makelist(0, i, 1, T@n)$
+tower_unit(T, i) := makelist(if j = i then 1 else 0, j, 0, T@n - 1)$
+tower_scalar(T, a) := cons(a, makelist(0, i, 1, T@n - 1))$
+
+/* the chain rule on a scalar c: sum_g (dc/dg) D g */
+tower_Dhat(T, c) := block([out: tower_zero(T)],
+  for i thru length(T@gens) do out: padd(out, pscale(diff(c, (T@gens)[i]), (T@derivs)[i])),
+  out)$
+
+/* the derivation of the tower on a coordinate list */
+tower_D(T, u) := block([out, h1, t],
+  u: tower_pad(T, u),
+  out: tower_Dhat(T, u[1]),
+  if T@q = false then return(out),
+  if T@m = 2 then (
+    h1: tower_Dhat(T, u[2]),
+    out: padd(out, pmul(h1, [0, 1], T@q)),
+    return(padd(out, pscale(u[2], T@Dy)))),
+  for i: 1 thru T@m - 1 do if u[i + 1] # 0 then (
+    t: padd(tower_Dhat(T, u[i + 1]), pscale(u[i + 1], (T@Lam)[i + 1])),
+    out: padd(out, radbasis_times_w(T@basis, t, i))),
+  out)$
+
+tower_mul(T, u, v) := if T@q = false then [canon(u[1]*v[1]), 0]
+  else if T@m = 2 then pmul(u, v, T@q)
+  else radbasis_mult(T@basis, tower_pad(T, u), tower_pad(T, v))$
+tower_div(T, u, v) := if T@q = false then [canon(u[1]/v[1]), 0]
+  else if T@m = 2 then pdiv(u, v, T@q)
+  else radbasis_div(T@basis, tower_pad(T, u), tower_pad(T, v))$
+tower_norm(T, u) := if T@q = false then canon(u[1])
+  else if T@m = 2 then canon(u[1]^2 - T@q*u[2]^2)
+  else radbasis_norm(T@basis, tower_pad(T, u))$
+tower_from_Y(T, expr, Y) := if T@q = false then [canon(expr), 0]
+  else if T@m = 2 then pair_reduce(expr, Y, T@q)
+  else radbasis_from_Y(T@basis, expr, Y)$
+tower_to_Y(T, u, Y) := if T@q = false then u[1]
+  else if T@m = 2 then u[1] + u[2]*Y
+  else radbasis_to_Y(T@basis, tower_pad(T, u), Y)$
+/* l_0 with p | Q_{l_0} (the multiplicity of p in q); 0 if unramified */
+branch_mult(T, p) := if T@q = false then 0 else vp(T@q, p, T@gens)$
+
+/* pair [a, b] = a + b*y of an expression rational in the generators and the symbol
+   Ysym with Ysym^2 = q (denominator rationalised) */
+pair_reduce(e, Ysym, q) := block([nd, n, d, db, N, D0],
+  pr_red(z) := remainder(expand(z), Ysym^2 - q, Ysym),
+  nd: num_den(expand(e)), n: pr_red(nd[1]), d: pr_red(nd[2]),
+  db: subst(-Ysym, Ysym, d),
+  N: pr_red(expand(n*db)), D0: pr_red(expand(d*db)),
+  [canon(subst(0, Ysym, N)/D0), canon(ratcoef(N, Ysym, 1)/D0)])$
+
+/* ---------------------------------------------------------------- valuations */
+
+/* exact multiplicity of the polynomial p in the polynomial poly (both in gens): the
+   number of times p divides poly in F[gens] -- divisibility tested by the denominator
+   of the cancelled quotient being free of the generators */
+poly_mult(poly, p, gens) := block([m: 0, P: poly, r],
+  if free_of_all(gens, p) or canon(poly) = 0 then return(0),
+  while (r: rat(P/p), free_of_all(gens, ratdisrep(ratdenom(r)))) do (m: m + 1, P: ratdisrep(r)),
+  m)$
+
+vp(expr, p, gens) := block([e: canon(expr), nd],
+  if e = 0 then return(inf),
+  nd: num_den(e),
+  poly_mult(nd[1], p, gens) - poly_mult(nd[2], p, gens))$
+
+/* v_P of the list u at the prime(s) P over p (Lemma 4.3 / Part I, S4): unramified:
+   min_i v_p(u_i); branch, p | Q_{l_0} with gcd(m, l_0) = 1 (e_P = m, v_P(y) = l_0,
+   v_P(w_i) = i l_0 mod m): min_i (m v_p(u_i) + (i l_0 mod m)) */
+vP(u, p, T, branch) := block([g: T@gens, l0],
+  if T@q = false then return(vp(u[1], p, g)),
+  if not branch then return(lmin(makelist(vp(u[i], p, g), i, 1, T@n))),
+  if T@m = 2 then return(min(2*vp(u[1], p, g), 2*vp(u[2], p, g) + 1)),
+  l0: branch_mult(T, p),
+  if gcd(T@m, l0) # 1 then error("partially ramified branch prime (", p, "): gcd(m, l_0) =", gcd(T@m, l0), "> 1"),
+  lmin(makelist(T@m*vp(u[i + 1], p, g) + mod(i*l0, T@m), i, 0, T@m - 1)))$
+
+eta(T, p, branch) := block([vals: map(lambda([d], -vP(d, p, T, branch)), T@derivs)],
+  if T@q # false then vals: append(vals, map(lambda([dw], -vP(dw, p, T, branch)), rest(T@Dw))),
+  lmax(cons(0, sublist(vals, lambda([v], v # inf and v # minf)))))$
+
+/* [branch, eta, delta, special] at the prime(s) over p.  The uniformiser of the
+   normality test is p (unramified) or w_{i*} with i* l_0 = 1 mod m (branch; y for m = 2). */
+classify(T, p) := block([branch, et, istar, pi, special],
+  branch: is(T@q # false and vp(T@q, p, T@gens) > 0),
+  et: eta(T, p, branch),
+  if branch then (
+    istar: if T@m = 2 then 1 else inv_mod(branch_mult(T, p), T@m),
+    pi: tower_unit(T, istar))
+  else pi: tower_scalar(T, p),
+  special: is(et + vP(tower_D(T, pi), p, T, branch) >= 1),
+  [branch, et, 1 + et, special])$
+
+/* ---------------------------------------------------------------- residues at places */
+
+/* position of e in the list L (1-based), false if absent */
+pm_index(L, e) := block([i: sublist_indices(L, lambda([z], z = e))], if i = [] then false else first(i))$
+
+/* pm_pow_parts(z): [base, exponent] of a radical subexpression -- sqrt(b) (Maxima's op is
+   sqrt, not "^"), b^(p/q), or sqrt(b)^k -- else false */
+pm_pow_parts(z) := if atom(z) then false
+  else if op(z) = sqrt then [first(args(z)), 1/2]
+  else if op(z) = "^" and not atom(first(args(z))) and op(first(args(z))) = sqrt and integerp(second(args(z))) then [first(args(first(args(z)))), second(args(z))/2]
+  else if op(z) = "^" and ratnump(second(args(z))) and not integerp(second(args(z))) then [first(args(z)), second(args(z))]
+  else false$
+pm_pow_base(z) := first(pm_pow_parts(z))$
+pm_pow_exp(z) := second(pm_pow_parts(z))$
+/* every radical subexpression (see pm_pow_parts) */
+pm_pows(e) := block([out: []],
+  pm_pw(z) := if atom(z) then false else (
+    if pm_pow_parts(z) # false then out: cons(z, out),
+    map(pm_pw, args(z)), false),
+  pm_pw(e), unique(out))$
+
+/* the roots of a polynomial in x in radicals with multiplicity (solve: linear to quartic
+   formulas), or false when solve does not deliver every root */
+poly_roots(p, x) := block([sols, rts: [], mults, d: ratp_hipow(rat(p), x), ok: true],
+  sols: errcatch(solve(p, x)),
+  if sols = [] then return(false),
+  sols: first(sols),
+  if not listp(sols) then return(false),
+  mults: multiplicities,
+  if not listp(mults) or length(mults) # length(sols) then mults: makelist(1, i, 1, length(sols)),
+  for i thru length(sols) do (
+    if atom(sols[i]) or op(sols[i]) # "=" or lhs(sols[i]) # x or not freeof(x, rhs(sols[i])) then ok: false
+    else rts: append(rts, makelist(pm_root_canon(rhs(sols[i])), j, 1, mults[i]))),
+  if ok and length(rts) = d then rts else false)$
+
+/* a root of a polynomial in canonical form: a constant is put in rectangular form when
+   that stays algebraic (solve writes the roots of u^4 + 1 as (-1)^(1/4) and
+   (-1)^(1/4)*%i, two dependent kernels that defeat the algebraic arithmetic) and
+   denested; an expression in other generators is only cancelled */
+pm_root_canon(r) := block([z: canon(r), z2],
+  if not pm_constantp(z) then return(z),
+  z2: errcatch(ratsimp(rectform(z))),
+  if z2 # [] and free_of_all([atan2, atan, cos, sin, abs], first(z2)) then z: first(z2),
+  pm_denest(z))$
+
+/* the coefficients of p in g, highest first, as general expressions */
+poly_coeffs(p, g) := block([r: rat(p), dn],
+  if r = 0 then return([0]),
+  dn: ratdisrep(ratdenom(r)),                        /* ratp_* read the CRE numerator only */
+  append(map(lambda([c], ratdisrep(c)/dn), ratp_dense_coeffs(r, g)), makelist(0, i, 1, ratp_lopow(r, g))))$   /* ratp_dense_coeffs stops at the lowest power present */
+poly_degree(p, g) := if canon(p) = 0 then minf else ratp_hipow(rat(p), g)$
+poly_lc(p, g) := block([r: rat(p)], ratdisrep(first(ratp_dense_coeffs(r, g)))/ratdisrep(ratdenom(r)))$
+
+/* points_over(T, p): the places over p as substitutions [g, root, yval], via a generator
+   in which p has degree <= 4; the m sheets over a root rho are y = zeta^k q(rho)^(1/m);
+   yval is false for m = 1.  false when no generator serves. */
+points_over(T, p) := block([res: false],
+  for g in T@gens while res = false do block([cc, d, roots: false, dsc, pts: [], zeta, qbar, r, yv],
+    cc: poly_coeffs(p, g), d: length(cc) - 1,
+    if member(d, [1, 2, 3, 4]) and every(lambda([c], freeof(g, c)), cc) then (
+      if d = 1 then roots: [canon(-cc[2]/cc[1])]
+      else if d = 2 then (
+        dsc: block([radexpand: all], sqrt(factor(cc[2]^2 - 4*cc[1]*cc[3]))),
+        roots: [canon((-cc[2] + dsc)/(2*cc[1])), canon((-cc[2] - dsc)/(2*cc[1]))])
+      else if every(lambda([c], free_of_all(T@gens, c)), cc) then roots: poly_roots(p, g),
+      if roots # false then (
+        roots: map(pm_denest, roots),
+        zeta: if T@q # false then zeta_m(T@m) else false,
+        for rho in roots do
+          if T@q = false then pts: endcons([g, rho, false], pts)
+          else (
+            qbar: pm_denest(canon(subst(rho, g, T@q))),
+            r: pm_denest(mroot(qbar, T@m)),
+            for k: 0 thru T@m - 1 do (
+              yv: if k = 0 then r else if T@m = 2 then pm_denest(zeta^k*r) else pm_denest(expand(zeta^k*r)),
+              pts: endcons([g, rho, yv], pts))),
+        res: pts))),
+  res)$
+
+/* is the expression a constant (free of every symbol)?  %i, %e, %pi count as constants */
+pm_constantp(e) := is(sublist(listofvars(e), lambda([v], not constantp(v))) = [])$
+
+/* numeric zero test of a constant: |e| < 10^-20 at 30 digits; false when it cannot be
+   evaluated */
+pm_num_zero(e) := block([fpprec: 30, v],
+  v: errcatch(cabs(rectform(bfloat(e)))),
+  is(v # [] and bfloatp(first(v)) and first(v) < 1b-20))$
+
+/* iszero(v): zero test that handles algebraic constants such as sqrt(-%i), which ratsimp
+   alone does not canonicalise (Python: simplify / expand_complex); expressions with free
+   symbols by ratsimp then radcan; constants by rectform, then radcan, then numerically. */
+iszero(v) := block([z: canon(v)],
+  if z = 0 then true
+  else if not pm_constantp(z) then is(radcan(z) = 0)
+  else if canon(rectform(z)) = 0 then true
+  else if pm_denest(z) = 0 then true
+  else if radcan(z) = 0 then true
+  else pm_num_zero(z))$
+
+/* algzero(e): the zero test of the linear-system verification: canonical form, radcan,
+   then a numeric check of a constant */
+algzero(e) := block([z: canon(e)],
+  if z = 0 then true
+  else if not pm_constantp(z) then is(radcan(z) = 0)
+  else if radcan(z) = 0 then true
+  else pm_num_zero(z))$
+
+/* value of an expression in the generators and Y at the place pt = [g, rho, yv]:
+   'und when the expression has a pole there */
+reduce_at(expr, pt, y_symbol) := block([g: pt[1], rho: pt[2], yv: pt[3], e: expr, r],
+  if yv # false then e: subst(yv, y_symbol, e),
+  r: errcatch(ratsimp(subst(rho, g, canon(e)))),
+  if r = [] then 'und else pm_denest(first(r)))$
+
+/* pm_denest(z): a canonical form of an algebraic constant with nested square roots
+   denested (sqrtdenest, with rectform for negative radicands), else the input; the
+   Chebyshev residues sqrt(2^(5/2)+9) (= 2 sqrt(2) + 1) blow up every later step
+   when left nested (MAXIMA_DIVERGENCES.md) */
+pm_denest(z) := block([z1, z2, negbase],
+  if not pm_constantp(z) or pm_pows(z) = [] then return(z),
+  /* a radical of a negative number ((-1)^(1/4), sqrt(-3+...)) goes to rectangular form
+     when that stays algebraic: it replaces dependent kernels by sqrt and %i */
+  negbase(e) := some(lambda([w], block([b: pm_pow_base(w)], ratnump(b) and b < 0)), pm_pows(e)),
+  if negbase(z) or not freeof(%i, z) then (
+    z2: errcatch(ratsimp(rectform(z))),
+    if z2 # [] and free_of_all([atan2, atan, cos, sin, abs], first(z2)) and not negbase(first(z2)) then z: first(z2)),
+  if not some(lambda([w], denom(pm_pow_exp(w)) = 2), pm_pows(z)) then return(z),
+  z1: errcatch(ratsimp(sqrtdenest(z))),
+  z1: if z1 = [] then z else first(z1),
+  z2: errcatch(ratsimp(sqrtdenest(ratsimp(rectform(z1))))),
+  z2: if z2 = [] then z1 else first(z2),
+  if slength(string(z2)) < slength(string(z1)) then z2 else z1)$
+
+resfmt(v) := pm_denest(canon(v))$
+
+/* q(rho + e)/q(rho) as an expanded polynomial in e with constant term 1: a root of it
+   expands from leading term 1.  (ratsimp writes it as -(...)/49 and sqrt pulls %i out of
+   the leading minus sign, flipping the branch -- MAXIMA_DIVERGENCES.md.) */
+pm_unit_ratio(q, g, rho, e) := expand(canon(subst(rho + e, g, q)/subst(rho, g, q)))$
+
+/* norm_search_chunk(q, p, g, k, db): every u = a + b*y with a^2 - q b^2 = c p^k, b monic
+   of degree db, as [a, b, c, k].  a is eliminated: R = q b^2 + c p^k must be a square, and
+   its polynomial square root (sqrt_polypart with symbolic coefficients) gives a; the
+   remaining coefficient conditions are a small system in the coefficients of b and in
+   c (algsys on the nine-equation, eight-unknown system of the direct formulation does
+   not return for deg q = deg p = 4, k = db = 2, MAXIMA_DIVERGENCES.md).  When the two
+   leading terms of R can cancel (equal degrees) the cancelling value of c is a separate
+   branch with a of lower degree, solved directly. */
+norm_search_chunk(q, p, g, k, db) := block([dq: poly_degree(q, g), dp: poly_degree(p, g), da, bc, b, alpha, beta, out: [],
+  others, e_: 'ne, csub, R, a, eqs, unks, sols, aa, bb, cc, top, ac, eq, c0],
+  others: sublist(listofvars(q*p), lambda([v], v # g)),
+  da: floor((max(dq + 2*db, k*dp) + 1)/2),
+  top: max(dq + 2*db, k*dp),
+  bc: makelist(concat('nb, i), i, 0, db - 1),
+  b: sum(bc[i + 1]*g^i, i, 0, db - 1) + g^db,
+  alpha: if dq + 2*db >= k*dp then poly_lc(q, g) else 0,
+  beta: if k*dp >= dq + 2*db then poly_lc(p, g)^k else 0,
+  ns_keep(aa, bb, cc, unks) := if cc # 0 and free_of_all(append(unks, others), aa) and free_of_all(append(unks, others), bb)
+      and pm_constantp(cc) and freeof(%r, aa) and freeof(%r, cc) and canon(expand(aa^2 - q*bb^2 - cc*p^k)) = 0
+    then out: endcons([expand(aa), expand(bb), cc, k], out),
+  /* the generic branch: deg R = top (even), a = sqrt(R) */
+  if evenp(top) then (
+    csub: if beta # 0 then (e_^2 - alpha)/beta else 'nc,
+    R: expand(q*b^2 + csub*p^k),
+    a: block([radexpand: all], sqrt_polypart(R, g)),
+    eqs: sublist(makelist(ratnumer(ratsimp(ratcoef(expand(a^2 - R), g, i))), i, 0, top), lambda([e], e # 0)),
+    unks: append(bc, [if beta # 0 then e_ else 'nc]),
+    sols: errcatch(algsys(eqs, unks)),
+    if sols # [] then for s_ in first(sols) do
+      if not (beta # 0 and canon(subst(s_, e_)) = 0) then block([r_],      /* ne = 0: a spurious root of the cleared denominators */
+        r_: errcatch(aa: canon(subst(s_, a)), bb: subst(s_, b), cc: canon(subst(s_, csub))),
+        if r_ # [] then (ns_keep(aa, bb, cc, unks), ns_keep(-aa, bb, cc, unks)))),   /* both signs of the square root, as solve returns them */
+  /* the degenerate branch: the leading terms cancel, c = -alpha/beta, deg a < da */
+  if alpha # 0 and beta # 0 then (
+    c0: -alpha/beta,
+    ac: makelist(concat('na, i), i, 0, da - 1),
+    a: sum(ac[i + 1]*g^i, i, 0, da - 1),
+    eq: expand(a^2 - q*b^2 - c0*p^k),
+    eqs: sublist(makelist(ratcoef(eq, g, i), i, 0, top), lambda([e], e # 0)),
+    unks: append(ac, bc),
+    sols: errcatch(algsys(eqs, unks)),
+    if sols # [] then for s_ in first(sols) do (
+      aa: subst(s_, a), bb: subst(s_, b),
+      ns_keep(aa, bb, c0, unks))),
+  out)$
+
+/* every solution for k <= kmax, db <= dbmax in the order of the Python generator */
+norm_search_all(q, p, g, kmax, dbmax) := block([out: []],
+  for k thru kmax do for db: 0 thru dbmax do out: append(out, norm_search_chunk(q, p, g, k, db)),
+  out)$
+
+norm_search(q, p, g, kmax, dbmax) := block([res: false],
+  for k thru kmax while res = false do for db: 0 thru dbmax while res = false do
+    block([ch: norm_search_chunk(q, p, g, k, db)], if ch # [] then res: first(ch)),
+  res)$
+
+/* coefficient of e^k (k may be negative) of a truncated Laurent series in e */
+laurent_coeff(ser, e, k) := block([N: 40, r: taytorat(ser)],
+  ratcoef(ratexpand(r*e^N), e, N + k))$
+
+/* order of vanishing of u0 + u1*y at a place with constant coordinates (series in the
+   base generator) */
+vanish_order(T, u, pt, Y) := block([g: pt[1], rho: pt[2], yv: pt[3], e: gensym("e"), r, eps, ub, ser, k: 0],
+  if not pm_constantp(rho) or not free_of_all(sublist(T@gens, lambda([z], z # g)), T@q) then return(1),
+  r: block([radexpand: all], sqrt(canon(subst(rho, g, T@q)))),
+  eps: if iszero(yv - r) then 1 else if iszero(yv + r) then -1 else false,
+  if eps = false then return(1),
+  /* y = yv (q(rho + e)/q(rho))^(1/2) on the branch through yv */
+  ub: subst(rho + e, g, u[1]) + subst(rho + e, g, u[2])*eps*r*sqrt(pm_unit_ratio(T@q, g, rho, e)),
+  ser: taylor(expand(ub), e, 0, 8),
+  while k < 8 and iszero(laurent_coeff(ser, e, k)) do k: k + 1,
+  k)$
+
+/* Corollary 7.6 at the places over p: [[tau, u_pair], ...] or false */
+realise_points(T, p, pts, taus, Y, verbose) := block([g, res: false, out, ok, hits, gammas],
+  if every(lambda([tt], tt = taus[1]), taus) then
+    return(if taus[1] # 0 then [[taus[1], [p, 0]]] else []),
+  g: pts[1][1],
+  if T@q = false then
+    /* no curve: every place over p is the principal prime (g - rho) */
+    return(sublist(makelist([taus[i], [g - pts[i][2], 0]], i, 1, length(pts)), lambda([z], first(z) # 0))),
+  for k_ thru 2 while res = false do for db_: 0 thru 2 while res = false do
+  for s in norm_search_chunk(T@q, p, g, k_, db_) while res = false do block([a: s[1], b: s[2], c: s[3], k: s[4]],
+    out: [], ok: true,
+    for sg in [1, -1] while ok do block([uu: [a, sg*b]],
+      hits: sublist(makelist([pts[i], taus[i]], i, 1, length(pts)),
+                    lambda([pt_tt], iszero(reduce_at(uu[1] + uu[2]*Y, pt_tt[1], Y)))),
+      gammas: map(lambda([pt_tt], canon(pt_tt[2]/vanish_order(T, uu, pt_tt[1], Y))), hits),
+      if not (gammas # [] and every(lambda([gg], iszero(gg - gammas[1])), gammas)) then ok: false
+      else if gammas[1] # 0 then out: endcons([gammas[1], uu], out)),
+    if ok then (
+      if verbose then for gu in out do
+        printf(true, "      norm factor ~a + (~a)*y (N = ~a*(~a)^~a): coefficient ~a~%",
+               string(gu[2][1]), string(gu[2][2]), string(c), string(p), k, string(gu[1])),
+      res: out)),
+  res)$
+
+/* Corollary 7.6 for a residue divisor supported over several primes p_1, ..., p_r at
+   once: N(u) = c (p_1 ... p_r)^k.  pending = [[p, pts, taus], ...]; returns
+   [[coeff, u_pair], ...] realising every nonzero residue, or false. */
+realise_joint(T, pending, Y, verbose) := block([g, P, allpts, res: false, out, ok, covered, hits, gammas],
+  if T@q = false or length(pending) < 2 then return(false),
+  g: pending[1][2][1][1],
+  if not free_of_all(sublist(T@gens, lambda([z], z # g)), T@q)
+     or not every(lambda([pp], pp[2][1][1] = g), pending) then return(false),
+  P: apply("*", map(first, pending)),
+  allpts: apply(append, map(lambda([pp], makelist([pp[2][i], pp[3][i]], i, 1, length(pp[2]))), pending)),
+  for k_ thru 2 while res = false do for db_: 0 thru 2 while res = false do
+  for s in norm_search_chunk(T@q, P, g, k_, db_) while res = false do block([a: s[1], b: s[2], c: s[3], k: s[4]],
+    out: [], ok: true, covered: [],
+    for sg in [1, -1] while ok do block([uu: [a, sg*b]],
+      hits: sublist(makelist([i, allpts[i][2]], i, 1, length(allpts)),
+                    lambda([itt], iszero(reduce_at(uu[1] + uu[2]*Y, allpts[itt[1]][1], Y)))),
+      gammas: map(lambda([itt], canon(itt[2]/vanish_order(T, uu, allpts[itt[1]][1], Y))), hits),
+      if not (gammas # [] and every(lambda([gg], iszero(gg - gammas[1])), gammas)) then ok: false
+      else (
+        covered: append(covered, map(first, hits)),
+        if gammas[1] # 0 then out: endcons([gammas[1], uu], out))),
+    if ok and every(lambda([i], allpts[i][2] = 0 or member(i, covered)), makelist(i, i, 1, length(allpts))) then (
+      if verbose then for gu in out do
+        printf(true, "      joint norm factor ~a + (~a)*y over ~a (N = ~a*(~a)^~a): coefficient ~a~%",
+               string(gu[2][1]), string(gu[2][2]), string(P), string(c), string(P), k, string(gu[1])),
+      res: out)),
+  res)$
+
+/* certify_nonconstant(tau, gens): exact decision of whether a residue tau -- an element
+   of kappa(P) given as an expression in the generators, algebraic numbers and at most
+   one algebraic function sqrt(A) -- lies outside Fbar.  true: certified non-constant;
+   false: constant; undecided: no verdict. */
+certify_nonconstant(tau, gens) := block([pows, algs, A, S, e, nd, n, d, dbar, N, D0, a, b, r, is_sq, k],
+  tau: ratsimp(tau),
+  if free_of_all(gens, tau) then return(false),
+  pows: sublist(pm_pows(tau), lambda([z], not free_of_all(gens, pm_pow_base(z)))),
+  if some(lambda([z], not member(denom(pm_pow_exp(z)), [1, 2])), pows) then return('undecided),
+  algs: unique(map(pm_pow_base, sublist(pows, lambda([z], denom(pm_pow_exp(z)) = 2)))),
+  if algs = [] then (
+    nd: num_den(canon(tau)),
+    return(is(not free_of_all(gens, nd[1]) or not free_of_all(gens, nd[2])))),
+  if length(algs) # 1 then return('undecided),
+  A: first(algs), S: gensym("S"),
+  e: tau,
+  for z in pows do if pm_pow_base(z) = A and denom(pm_pow_exp(z)) = 2 then
+    e: subst(S^num(pm_pow_exp(z)), z, e),
+  cn_red(z) := remainder(expand(z), S^2 - A, S),
+  nd: num_den(e), n: cn_red(nd[1]), d: cn_red(nd[2]),
+  dbar: subst(-S, S, d),
+  N: cn_red(expand(n*dbar)), D0: cn_red(expand(d*dbar)),
+  if not freeof(S, D0) then return('undecided),
+  a: subst(0, S, N), b: ratcoef(expand(N), S, 1),
+  r: block([radexpand: all], sqrt(factor(A))),
+  is_sq: not some(lambda([z], denom(pm_pow_exp(z)) = 2 and not free_of_all(gens, pm_pow_base(z))), pm_pows(r)),
+  if is_sq then return(certify_nonconstant(canon((a + b*r)/D0), gens)),
+  if canon(b/D0) # 0 then return(true),
+  certify_nonconstant(canon(a/D0), gens))$
+
+/* residue_free(T, g, Y): n = 1, D = d/dx: certify that g dx (g a pair) has zero residue
+   at every affine place, by classical series at unramified and branch places.  A false
+   here means the realisation is not trusted. */
+residue_free(T, g, Y) := block([x: (T@gens)[1], q: T@q, den, e: gensym("e"), ok: true, p, branch, rd, yser, loc, res, x_loc, yloc],
+  den: lcm(second(num_den(canon(g[1]))), second(num_den(canon(g[2])))),
+  for fl in factor_terms(den, [x]) while ok do (
+    p: fl[1],
+    if freeof(x, p) then ok: ok
+    else (
+      /* sub-critical poles carry no residue (Theorem 7.4(ii)) */
+      branch: is(poly_degree(gcd(p, q), x) > 0),
+      if vP(g, p, T, branch) > -(if branch then 2 else 1) then ok: ok
+      else (
+        rd: poly_roots(p, x),
+        if rd = false then ok: false
+        else for rho in rd while ok do (
+          if canon(subst(rho, x, q)) # 0 then (
+            yser: pm_denest(block([radexpand: all], sqrt(canon(subst(rho, x, q)))))*sqrt(pm_unit_ratio(q, x, rho, e)),
+            for sg in [1, -1] while ok do (
+              loc: subst(rho + e, x, g[1]) + sg*subst(rho + e, x, g[2])*yser,
+              res: laurent_coeff(taylor(loc, e, 0, 0), e, -1),
+              if not iszero(res) then ok: false))
+          else (
+            x_loc: rho + e^2,
+            yloc: e*sqrt(canon(subst(x_loc, x, q)/e^2)),
+            loc: 2*e*(subst(x_loc, x, g[1]) + subst(x_loc, x, g[2])*yloc),
+            res: laurent_coeff(taylor(loc, e, 0, 0), e, -1),
+            if not iszero(res) then ok: false))))),
+  ok)$
+
+/* the irreducible factors of a polynomial over Q as [[factor, multiplicity], ...],
+   constants dropped (the counterpart of factor_list) */
+factor_terms(p, gens) := block([f: factor(p), out: []],
+  ft_one(t) := if free_of_all(gens, t) then false
+    else if not atom(t) and op(t) = "-" then ft_one(first(args(t)))
+    else if not atom(t) and op(t) = "^" then out: cons([first(args(t)), second(args(t))], out)
+    else out: cons([t, 1], out),
+  if not atom(f) and op(f) = "-" then f: first(args(f)),
+  if not atom(f) and op(f) = "*" then map(ft_one, args(f)) else ft_one(f),
+  reverse(out))$
+
+/* vinfty_residue(T, f, Y): hypertangent top generator t, Dt = eta (1 + t^2): the place
+   v_oo has delta = 1 and uniformiser 1/t; for v_oo(f) = -1 the residue is
+   tau = -(lim f/t)/eta in kappa(v_oo) = K_{n-1}(y), as a list.  false if the top
+   generator is not hypertangent or v_oo(f) != -1. */
+vinfty_residue(T, f, Y) := block([t: last(T@gens), et, vs, ct, tau],
+  if T@q = false or not freeof(t, T@q) then return(false),
+  et: map(lambda([c], canon(c/(1 + t^2))), last(T@derivs)),
+  if some(lambda([c], not freeof(t, c)), et) or every(lambda([c], c = 0), et) then return(false),
+  vi_vinf(c) := block([nd], c: canon(c), if c = 0 then false else (nd: num_den(c), poly_degree(nd[2], t) - poly_degree(nd[1], t))),
+  vs: sublist(map(vi_vinf, f), lambda([v], v # false)),
+  if vs = [] or lmin(vs) # -1 then return(false),
+  vi_lead(c) := block([nd], c: canon(c), if c = 0 or vi_vinf(c) # -1 then 0
+    else (nd: num_den(c), canon(poly_lc(nd[1], t)/poly_lc(nd[2], t)))),
+  ct: map(vi_lead, f),
+  tau: tower_div(T, ct, et),
+  map(lambda([c], canon(-c)), tau))$
+
+/* Laurent residues at a delta = 1 normal prime with a pole of order >= 2 (well-defined:
+   exact parts contribute none).  Single-generator slice: gens = [g] with Dg = 1. */
+deep_residues(T, f, p, pts, Y) := block([g: (T@gens)[1], e: gensym("e"), m: T@m, out: [], qbar, yser, floc, ser],
+  for pt in pts do (
+    qbar: canon(subst(pt[2], g, T@q)),
+    /* y = yv (q(rho + e)/q(rho))^(1/m) on the sheet through yv */
+    yser: pt[3]*(pm_unit_ratio(T@q, g, pt[2], e))^(1/m),
+    floc: sum(subst(pt[2] + e, g, f[i + 1])*yser^i/subst(pt[2] + e, g, (T@E)[i + 1]), i, 0, T@n - 1),
+    ser: taylor(floc, e, 0, 0),
+    out: endcons(resfmt(laurent_coeff(ser, e, -1)), out)),
+  out)$
+
+/* does the expression carry algebraic constants (%i, sqrt(5), 2^(1/4), ...)? */
+has_alg(e) := is(not freeof(%i, e) or some(lambda([z], pm_constantp(pm_pow_base(z))), pm_pows(e)))$
+
+/* canonical_residues(T, f, p, pts, Y, verbose): Algorithm 2 (Proposition 7.7, the
+   canonical residue) at the places over an unramified normal prime p with delta = 1 and
+   constant coordinates, in any tower: with pi = g - rho the local Hermite reduction
+       f <- f - D(c pi^{-k}),   c = -mu/(k lambda_P),
+   is run with the exact derivation of the tower until the pole is simple, and the
+   residue (f pi/D pi)|_P is read off.  Returns the list of residues (one per place), or
+   false when the loop does not apply. */
+canonical_residues(T, f, p, pts, Y, verbose) := block(
+  [gens: T@gens, q: T@q, m: T@m, g: pts[1][1], Dg, e: gensym("e"), ncomp, out: [], failed: false],
+  if q # false and not free_of_all(sublist(gens, lambda([z], z # g)), q) then return(false),
+  if some(lambda([pt], not pm_constantp(pt[2]) or (pt[3] # false and not pm_constantp(pt[3]))), pts) then return(false),
+  Dg: (T@derivs)[pm_index(gens, g)],
+  ncomp: if q # false then T@n else 1,
+  for pt in pts while not failed do block([rho: pt[2], yv: pt[3], lam, qbar, fc: f, tau: false, k0, loc, yser, ser, j, mu, cj, k, c, w],
+    if q # false then (
+      lam: reduce_at(tower_to_Y(T, Dg, Y), pt, Y),
+      qbar: canon(subst(rho, g, q)))
+    else lam: canon(subst(rho, g, Dg[1])),
+    for iter thru 16 while tau = false do (
+      k0: lmax(makelist(-vp(fc[i], p, gens), i, 1, ncomp)),
+      if k0 <= 0 then tau: 0
+      else (
+        loc: subst(rho + e, g, fc[1]),
+        if q # false then (
+          yser: yv*taylor((pm_unit_ratio(q, g, rho, e))^(1/m), e, 0, k0 + 2),
+          loc: loc + sum(subst(rho + e, g, fc[i + 1])*yser^i/subst(rho + e, g, (T@E)[i + 1]), i, 1, ncomp - 1)),
+        ser: taylor(loc, e, 0, 0),
+        j: 0, mu: false,
+        for jj: k0 thru 1 step -1 while mu = false do (
+          cj: canon(laurent_coeff(ser, e, -jj)),
+          if not iszero(cj) then (j: jj, mu: cj)),
+        if mu = false then tau: 0
+        else if j = 1 then tau: resfmt(canon(mu/lam))
+        else (
+          k: j - 1,
+          c: canon(-mu/(k*lam)),
+          w: tower_scalar(T, canon(c/(g - rho)^k)),
+          fc: padd(fc, pscale(-1, tower_D(T, w))),
+          if verbose then printf(true, "      Hermite step at (~a, y=~a): order ~a -> subtract D(~a * (~a - (~a))^(-~a))~%",
+                                 string(rho), string(yv), j, string(c), string(g), string(rho), k)))),
+    if tau = false then failed: true else out: endcons(tau, out)),
+  if failed then false else out)$
+
+/* ---------------------------------------------------------------- elliptic curves, torsion */
+
+/* ell_ops(q, g): chord-and-tangent group law on y^2 = q(g), deg q = 3, on the monic
+   model X = c3 g, Ytil = c3 y, with the coordinates as algebraic constants (exact zero
+   tests by iszero).  Returns the model data E = [c3, a2, a4, c] with c = [c3, c2, c1, c0]
+   the coefficients of q; ell_to_m and ell_add take E (the closures of the Python). */
+ell_ops(q, g) := block([c: poly_coeffs(q, g)],
+  [c[1], c[2], canon(c[3]*c[1]), c])$
+
+ell_to_m(E, P) := [canon(E[1]*P[1]), canon(E[1]*P[2])]$
+
+/* P + Q on the model; false is the point at infinity */
+ell_add(E, P, Q) := block([x1, y1, x2, y2, lam, x3, a2: E[2], a4: E[3]],
+  if P = false then return(Q),
+  if Q = false then return(P),
+  x1: P[1], y1: P[2], x2: Q[1], y2: Q[2],
+  if iszero(x1 - x2) then (
+    if iszero(y1 + y2) then return(false),
+    lam: canon((3*x1^2 + 2*a2*x1 + a4)/(2*y1)))
+  else lam: canon((y2 - y1)/(x2 - x1)),
+  x3: canon(lam^2 - a2 - x1 - x2),
+  [x3, canon(lam*(x1 - x3) - y1)])$
+
+/* division_poly_order(A, B, X0, Y0, Nmax): the order of (X0, Y0) on y^2 = x^3 + A x + B
+   if <= Nmax, else false (psi_n with y^2 reduced; n P = O iff psi_n(P) = 0).
+   From weier.py of Part III. */
+division_poly_order(A, B, X0, Y0, Nmax) := block([xx: gensym("x"), yv: gensym("y"), f, psi, res: false],
+  f: xx^3 + A*xx + B,
+  dp_red(e) := remainder(expand(e), yv^2 - f, yv),
+  psi[0]: 0, psi[1]: 1, psi[2]: 2*yv,
+  psi[3]: 3*xx^4 + 6*A*xx^2 + 12*B*xx - A^2,
+  psi[4]: 4*yv*(xx^6 + 5*A*xx^4 + 20*B*xx^3 - 5*A^2*xx^2 - 4*A*B*xx - 8*B^2 - A^3),
+  dp_get(n) := block([m, r],
+    if member(n, map(first, rest(arrayinfo(psi), 2))) then return(psi[n]),
+    m: floor(n/2),
+    if oddp(n) then r: dp_get(m + 2)*dp_get(m)^3 - dp_get(m - 1)*dp_get(m + 1)^3
+    else r: dp_get(m)*(dp_get(m + 2)*dp_get(m - 1)^2 - dp_get(m - 2)*dp_get(m + 1)^2)/(2*yv),
+    psi[n]: dp_red(ratsimp(r)),
+    psi[n]),
+  for n: 2 thru Nmax while res = false do
+    if iszero(sublis([xx = X0, yv = Y0], dp_get(n))) then res: n,
+  remarray(psi),
+  res)$
+
+/* the order m <= bound of the point P (model coordinates of ell_ops): by the division
+   polynomials when the model is depressed, else by repeated addition; false if none */
+torsion_order(q, g, P, E, bound) := block([cc: E[4], m: false, kP: P],
+  if iszero(cc[2]) then (
+    m: division_poly_order(canon(cc[3]*cc[1]), canon(cc[4]*cc[1]^2), P[1], P[2], bound),
+    if m # false then return(m)),
+  for k: 2 thru bound while m = false do (
+    kP: ell_add(E, kP, P),
+    if kP = false then m: k),
+  m)$
+
+/* ell_sum(q, g, Y, terms, E): the sum S of the points of terms = [[P, n], ...], n in Z,
+   in the group law, and the function h with div(h) = sum n (P - oo) - (S - oo),
+   accumulated in K[Y, g] modulo Y^2 - q; returns [S, [h0, h1]] with h = h0 + h1 y as
+   rational functions of g.  With terms = [[P, m]], m the order of P, h is the Miller
+   function with divisor m P - m oo. */
+ell_sum(q, g, Y, terms, E) := block([c3: E[1], a2: E[2], a4: E[3], X0, S: false, num: 1, den: 1, P, n, x1, y1, lam, parts],
+  X0: c3*g,
+  es_red(e) := remainder(expand(e), Y^2 - q, Y),
+  for tm in terms do (
+    P: tm[1], n: tm[2],
+    if n < 0 then (P: [P[1], canon(-P[2])], n: -n, den: den*(X0 - P[1])^n),
+    for j thru n do
+      if S = false then S: P
+      else (
+        x1: S[1], y1: S[2],
+        if iszero(x1 - P[1]) and iszero(y1 + P[2]) then (num: num*(X0 - x1), S: false)
+        else (
+          lam: if iszero(x1 - P[1]) then canon((3*x1^2 + 2*a2*x1 + a4)/(2*y1))
+               else canon((P[2] - y1)/(P[1] - x1)),
+          num: es_red(num*(c3*Y - y1 - lam*(X0 - x1))),
+          S: ell_add(E, S, P),
+          den: den*(X0 - S[1])))),
+  num: es_red(num),
+  parts: makelist(canon(ratcoef(num, Y, i)/den), i, 0, 1),
+  [S, parts])$
+
+/* on y^2 = q(g), deg q = 3: the order m of [P - oo] for the place pt = [g, rho, y0]
+   with constant coordinates and the Miller function h with div(h) = m P - m oo as a
+   pair; false if no order <= bound */
+torsion_order_and_miller(q, g, pt, Y, bound, verbose) := block([E: ell_ops(q, g), P, m],
+  P: ell_to_m(E, [pt[2], pt[3]]),
+  m: torsion_order(q, g, P, E, bound),
+  if m = false then false else [m, second(ell_sum(q, g, Y, [[P, m]], E))])$
+
+/* a rational point [g0, y0] on y^2 = q(g), deg q = 2, or false: small integers and
+   half-integers first (the points at infinity are used by the caller through the
+   square leading coefficient) */
+rational_point(q, g) := block([res: false, g0, v, y0],
+  for n: 0 thru 12 while res = false do for sgn in [1, -1] while res = false do for den in [1, 2, 3] while res = false do (
+    g0: sgn*n/den,
+    v: canon(subst(g0, g, q)),
+    if ratnump(v) and v >= 0 then (y0: sqrt(v), if ratnump(y0) then res: [g0, y0])),
+  res)$
+
+/* ---------------------------------------------------------------- model changes */
+
+/* conic_to_line(T, f): rational parametrisation of a conic y^2 = q(g), deg q = 2,
+   through a rational point (g0, y0): the pencil y = y0 + w (g - g0) meets the conic in
+       g = (2 y0 w - (q2 + w^2) g0 - q1) / (q2 - w^2),   y = y0 + w (g - g0),
+   so the curve disappears and the whole tower is rewritten over Q(w) (w replaces g at
+   its position, q becomes false).  Returns [T', f', back] with back the substitution
+   [[w, (y - y0)/(g - g0)]], or false without a rational point. */
+conic_to_line(T, f) := block([gens: T@gens, q: T@q, g, cc, q2, q1, q0, pt, g0, y0, w, Y: gensym("Y"), g_new, y_new, Dg, num, Dw, new_derivs, new_gens, T2, f2],
+  g: first(sublist(gens, lambda([gg], free_of_all(sublist(gens, lambda([z], z # gg)), q)))),
+  cc: poly_coeffs(q, g), q2: cc[1], q1: cc[2], q0: cc[3],
+  pt: rational_point(q, g),
+  if pt = false then return(false),
+  g0: pt[1], y0: pt[2],
+  w: concat('w_, g),
+  g_new: canon((2*y0*w - (q2 + w^2)*g0 - q1)/(q2 - w^2)),
+  y_new: canon(y0 + w*(g_new - g0)),
+  ctl_conv(pair) := [canon(sublis([g = g_new, Y = y_new], pair[1] + pair[2]*Y)), 0],
+  /* D w = (Dy (g - g0) - (y - y0) Dg) / (g - g0)^2, as a pair, then rewritten */
+  Dg: (T@derivs)[pm_index(gens, g)],
+  num: padd(pscale(g - g0, T@Dy), pscale(-1, pmul([-y0, 1], Dg, q))),
+  Dw: pscale(1/(g - g0)^2, num),
+  new_derivs: makelist(ctl_conv(if gens[i] = g then Dw else (T@derivs)[i]), i, 1, length(gens)),
+  new_gens: map(lambda([gg], if gg = g then w else gg), gens),
+  T2: tower(new_gens, new_derivs, false),
+  f2: ctl_conv(f),
+  [T2, f2, [[w, (sqrt(q) - y0)/(g - g0)]]])$
+
+/* quartic_to_cubic(T, f): change of model for a quartic radicand q(g) with a square
+   leading coefficient (two rational places at infinity): with p the polynomial part of
+   sqrt(q) and r = q - p^2 (deg r <= 2), s = y - p(g) gives 2 p(g) s = r(g) - s^2, a
+   quadratic in g over Q(s) whose discriminant Delta(s) is a cubic; with
+   T = 2 A'(s) g + B'(s), T^2 = Delta(s), and (g, y) -> (s, T) is birational.  Returns
+   [T', f', back] with back the rules [[sqrt(Delta), 2 A' g + B'], [s, y - p(g)]]. */
+quartic_to_cubic(T, f) := block([gens: T@gens, q: T@q, g, p, r, s: gensym("s"), TT: gensym("T"), Y: gensym("Y"),
+  pc, rc, Ap, Bp, Cp, Delta, g_new, y_new, s_new, Dg, Dy, Ds, new_derivs, new_gens, T2, f2],
+  g: first(sublist(gens, lambda([gg], free_of_all(sublist(gens, lambda([z], z # gg)), q)))),
+  p: sqrt_polypart(q, g),
+  r: expand(q - p^2),
+  pc: append(reverse(poly_coeffs(p, g)), [0, 0, 0]),       /* ascending */
+  rc: append(reverse(poly_coeffs(r, g)), [0, 0, 0]),
+  Ap: expand(2*pc[3]*s - rc[3]), Bp: expand(2*pc[2]*s - rc[2]), Cp: expand(2*pc[1]*s - rc[1] + s^2),
+  Delta: expand(Bp^2 - 4*Ap*Cp),
+  if poly_degree(Delta, s) # 3 then error("quartic_to_cubic: the discriminant is not a cubic"),
+  g_new: canon((TT - Bp)/(2*Ap)),
+  y_new: s + subst(g_new, g, p),
+  qtc_conv(pair) := pair_reduce(sublis([g = g_new, Y = y_new], pair[1] + pair[2]*Y), TT, Delta),
+  s_new: concat('s_, g),
+  /* derivatives: Ds = Dy - p'(g) Dg ; T = 2 A' g + B' */
+  Dg: (T@derivs)[pm_index(gens, g)],
+  Dy: T@Dy,
+  Ds: padd(Dy, pscale(-diff(p, g), Dg)),
+  new_derivs: makelist(map(lambda([e], subst(s_new, s, e)), qtc_conv(if gens[i] = g then Ds else (T@derivs)[i])), i, 1, length(gens)),
+  new_gens: map(lambda([gg], if gg = g then s_new else gg), gens),
+  T2: tower(new_gens, new_derivs, subst(s_new, s, Delta)),
+  f2: map(lambda([e], subst(s_new, s, e)), qtc_conv(f)),
+  /* ordered: sqrt(Delta) -> 2 A'(s) g + B'(s) first (it introduces s), then s -> y - p(g) */
+  [T2, f2, [[sqrt(subst(s_new, s, Delta)), subst(s_new, s, 2*Ap*g + Bp)], [s_new, sqrt(q) - p]]])$
+
+/* ---------------------------------------------------------------- the analysis (Steps 1-14) */
+
+/* pmanalysis: Steps 1--14 of Algorithm 4 for one integrand over one tower: the
+   classification, the residues and their realisation, the tower specials, the units
+   and the residual, computed once by analyse and reused by every rung of the retry
+   ladder, which only re-enters at Step 15 (solve_stage).  specials (per split variant)
+   and the columns D u / u of the logands are memoised in the fields specials and cols
+   (association lists); parent maps a split factor to its special (analysis_parent);
+   inf and spec are the caches of inf_data / special_data. */
+defstruct(pmanalysis(T, f, Y, det_logs, unk_logs, denv, units, units_complete, rem, verbose, specials, cols, parent, infd, spec))$
+
+/* the constant coefficients of p in g are free of every generator */
+const_coeffs_p(p, g, gens) := every(lambda([c], free_of_all(gens, c)), poly_coeffs(p, g))$
+
+/* analysis_specials(A, split): [unk_logs, special_units] for the specials over Q
+   (split = false) or over Fbar (split = true): the special logands and the S'-units
+   found over them, computed once per variant */
+analysis_specials(A, split) := block([T: A@T, verbose: A@verbose, gens, q, m, unk_logs, new_logs, done_split, rd, special_units: [], sols, n_here, uu, pts_s, Ys, res_, cached],
+  cached: assoc(split, A@specials),
+  if cached # false then return(cached),
+  gens: T@gens, q: T@q, m: T@m,
+  unk_logs: A@unk_logs,
+  /* specials over Fbar (Theorem 6.1): on request, replace each special p(g) with
+     constant coefficients by its linear factors g - r */
+  if split then (
+    new_logs: [],
+    for pl in unk_logs do (
+      done_split: false,
+      for g in gens while not done_split do
+        if poly_degree(pl[1], g) >= 2 and const_coeffs_p(pl[1], g, gens) then (
+          rd: poly_roots(pl[1], g),
+          if rd # false then (
+            for r in rd do (
+              new_logs: endcons([g - r, 0], new_logs),
+              A@parent: cons([g - r, pl[1]], A@parent)),
+            done_split: true)
+          else done_split: 'nosplit),
+      if done_split # true then new_logs: endcons([pl[1], 0], new_logs)),
+    unk_logs: new_logs,
+    if verbose then printf(true, "  specials split over Fbar: ~a~%", string(map(first, unk_logs)))),
+  /* S'-units split over a special prime (Algorithm 4, Step 6): u = a + b y with
+     N(u) = c p^k for a special p, found by the norm search (m = 2 only) */
+  if q # false and m = 2 then (
+    for pl in unk_logs do block([pp: pl[1], found: false],
+      for g in gens while not found do
+        if free_of_all(sublist(gens, lambda([z], z # g)), q) and poly_degree(pp, g) >= 1 and const_coeffs_p(pp, g, gens) then (
+          found: true,
+          sols: sublist(norm_search_all(q, pp, g, 2, 1), lambda([s_], s_[2] # 0)),
+          /* generators, not the whole group: constant b first, then rational coefficients
+             before algebraic ones, at most four per special */
+          sols: sort(sols, lambda([s1, s2], pm_lex_less(pm_sol_key(s1, g), pm_sol_key(s2, g)))),
+          n_here: 0,
+          for s_ in sols do if n_here < 4 then
+            for sg in [1, -1] do (
+              uu: [expand(s_[1]), expand(sg*s_[2])],
+              if not pm_member_pair(uu, special_units) and not pm_member_pair([-uu[1], -uu[2]], special_units) then (
+                special_units: endcons(uu, special_units),
+                n_here: n_here + 1,
+                if verbose then printf(true, "  S'-unit over special (~a): ~a + (~a)*y  (N = ~a*(~a)^~a)~%",
+                                       string(pp), string(uu[1]), string(uu[2]), string(s_[3]), string(pp), s_[4]))),
+          /* torsion classes of the places over p (cubic models): the Miller functions are
+             S'-units too */
+          if poly_degree(q, g) = 3 then (
+            pts_s: points_over(T, pp),
+            if pts_s # false and every(lambda([pt], pm_constantp(pt[2]) and pm_constantp(pt[3])), pts_s) then (
+              Ys: gensym("y"),
+              for pt in pts_s do if length(special_units) < 8 then (
+                res_: torsion_order_and_miller(q, g, pt, Ys, 24, false),
+                if res_ # false and not pm_member_pair(res_[2], special_units) then (
+                  special_units: endcons(res_[2], special_units),
+                  if verbose then printf(true, "  S'-unit over special (~a): Miller function of [P - oo] of order ~a at (~a, ~a)~%",
+                                         string(pp), res_[1], string(pt[2]), string(pt[3])))))))))
+  else if q # false and unk_logs # [] and verbose then
+    printf(true, "  S'-units over the specials are not searched for m = ~a~%", m),
+  A@specials: cons([split, [unk_logs, special_units]], A@specials),
+  [unk_logs, special_units])$
+
+/* the sort key of a norm-search solution: [deg b, 0 if every coefficient is rational else 1, k] */
+pm_sol_key(s_, g) := [poly_degree(s_[2], g),
+  if every(ratnump, append(poly_coeffs(s_[1], g), poly_coeffs(s_[2], g))) then 0 else 1, s_[4]]$
+pm_member_pair(uu, L) := some(lambda([v], pequal(uu, v)), L)$
+
+/* analysis_column(A, kind, u): the column D u / u of a unit or S'-unit (kind 'u, u a
+   list) or of a special logand (kind 's, u a polynomial), with its coordinates as
+   cancelled [numerator, denominator] pairs; computed once per logand */
+analysis_column(A, kind, u) := block([key: [kind, u], cached, T: A@T, q, nc, col],
+  cached: assoc(key, A@cols),
+  if cached # false then return(cached),
+  q: T@q,
+  nc: if q # false then T@n else 1,
+  col: if kind = 'u then tower_div(T, tower_D(T, u), u)
+       else if q # false then tower_div(T, tower_D(T, tower_scalar(T, u)), tower_scalar(T, u))
+       else [canon(tower_D(T, [u, 0])[1]/u), 0],
+  cached: [col, makelist(num_den(canon(col[i])), i, 1, nc)],
+  A@cols: cons([key, cached], A@cols),
+  cached)$
+
+analysis_parent(A, pp) := assoc(pp, A@parent, false)$
+
+/* the residue tau_P = e (f h / Dh)|_P as a list, h = p */
+residue_expr(T, f, p, e_P) := block([Dp: tower_D(T, tower_scalar(T, p))],
+  if T@q # false then tower_div(T, pscale(e_P*p, f), Dp)
+  else [canon(e_P*p*f[1]/Dp[1]), 0])$
+
+/* analyse(f, T, extension, verbose): Steps 1--14 of Algorithm 4: a pmanalysis, or a
+   status list ["not elementary", ...] / ["failed", ...] / ["needs torsion realisation
+   (Parts I--II, milestone iii)", ...] when the pipeline exits before the ansatz. */
+analyse(f, T, extension, verbose) := block(
+  [gens: T@gens, q: T@q, m: T@m, nc, Y: gensym("y"), d: 1, det_logs: [], unk_logs: [], denv: 1, torsion: [],
+   pending_classes: [], fl, ret: false, cls: [], tau_hi, pts, taus, cert, got, tp, texpr, rc, rem, units: [], units_complete: true,
+   uu, cert_data, seen, cand, tinf, lower, nonconst, groups, unrealised, cv],
+  an_classify(p) := block([c: assoc(p, cls)], if c = false then (c: classify(T, p), cls: cons([p, c], cls)), c),
+  nc: if q # false then T@n else 1,
+  f: tower_pad(T, f),
+  /* the integrand must be a rational function of the generators */
+  for i thru nc do block([cc: canon(f[i]), nd],
+    nd: num_den(cc),
+    if not (polynomialp(nd[1], gens, lambda([c], free_of_all(gens, c))) and polynomialp(nd[2], gens, lambda([c], free_of_all(gens, c))))
+    then error("integrand component", f[i], "is not a rational function of the generators; build the tower first")),
+  f: makelist(if i <= nc then canon(f[i]) else 0, i, 1, T@n),
+  for i thru nc do d: lcm(d, second(num_den(f[i]))),
+  fl: if extension # false then factor_terms_ext(d, gens, extension) else factor_terms(d, gens),
+  for pm_ in fl while ret = false do block([p: pm_[1], mult: pm_[2], c, branch, et, delta, special, e_P, vP_, g_dir, tau, done: false],
+    if free_of_all(gens, p) then done: true
+    else (
+      c: an_classify(p), branch: c[1], et: c[2], delta: c[3], special: c[4],
+      e_P: if branch then m else 1,
+      vP_: vP(f, p, T, branch),
+      if special then (
+        unk_logs: endcons([p, 0], unk_logs),
+        if verbose then printf(true, "  (~a): special (multiplicity ~a); candidate log(~a)~%", string(p), mult, string(p)),
+        done: true)),
+    if not done then (
+      if verbose then printf(true, "  (~a): ~a, delta = ~a, v_P(f) = ~a~a~%", string(p),
+                             if branch then "branch" else "unramified", delta, vP_, if vP_ > -delta then "  [sub-critical]" else ""),
+      tau_hi: false,
+      if vP_ < -delta then (
+        denv: denv*p^ceiling((-vP_ - delta)/e_P),
+        if q = false and not branch then (
+          /* transcendental tower (pmint's setting): the canonical residue at any pole
+             order, computed in kappa(P) with no root substitution */
+          g_dir: residue_dir(T, p),
+          tau: if g_dir # false then canonical_residue_field(T, f, p, g_dir, delta, verbose) else false,
+          if tau # false and not iszero(tau) then (
+            if verbose then printf(true, "      canonical residue at order ~a: ~a~%", -vP_, string(tau)),
+            if const_dir(T, p) # false then tau_hi: tau
+            else (
+              cv: certify_nonconstant(tau, gens),
+              if cv = true then ret: ["not elementary", p, tau]
+              else if cv = 'undecided then ret: ["failed", "residue constancy undecided", p, tau]
+              else det_logs: endcons([tau, tower_scalar(T, p)], det_logs))))
+        else if delta = 1 and not branch then (
+          pts: points_over(T, p),
+          taus: if pts # false and q # false and length(gens) = 1 and (T@derivs)[1] = tower_unit(T, 0)
+                then deep_residues(T, f, p, pts, Y)
+                else if pts # false then canonical_residues(T, f, p, pts, Y, verbose)
+                else false,
+          if taus # false then (
+            if verbose then printf(true, "      canonical residues at order ~a: ~a~%", -vP_, string(taus)),
+            cert: map(lambda([tt], [certify_nonconstant(tt, gens), tt]), taus),
+            if some(lambda([ct], ct[1] = true), cert) then
+              ret: ["not elementary", p, second(first(sublist(cert, lambda([ct], ct[1] = true))))]
+            else if some(lambda([ct], ct[1] = 'undecided), cert) then
+              ret: ["failed", "residue constancy undecided", p, second(first(sublist(cert, lambda([ct], ct[1] = 'undecided))))]
+            else (
+              got: if m = 2 or q = false then realise_points(T, p, pts, taus, Y, verbose)
+                   else realise_at_points(T, p, pts, taus, verbose),
+              if got = false then torsion: endcons([p, pts, taus], torsion)
+              else det_logs: append(det_logs, got))))),
+      if ret = false and (vP_ = -delta or tau_hi # false) then (
+        /* tau_P = e (f h / Dh)|_P with h = p, or the canonical residue of the deeper pole */
+        if tau_hi # false then (tp: [tau_hi, 0], texpr: tau_hi)
+        else (tp: residue_expr(T, f, p, e_P), texpr: tower_to_Y(T, tp, Y)),
+        if branch then error("critical branch residue"),
+        pts: points_over(T, p),
+        /* a prime of degree > 4, and every constant-coefficient prime when m >= 3:
+           residues in the residue field K[g]/(p) (no roots), the residue classes as
+           (prime, sheet polynomial), each realised by Hensel lifting and linear algebra */
+        if pts = false or (m >= 3 and const_dir(T, p) # false) then (
+          rc: residue_classes(T, p, tp, Y, verbose),
+          if rc = false then error("residues over (", p, "): no constant-coefficient direction"),
+          if listp(rc) and stringp(first(rc)) then (
+            if not (pts # false and first(rc) = "failed" and pm_substring_p("several sheets", second(rc))) then ret: rc
+            /* else fall through to the explicit places */)
+          else (
+            for cp in rc[3] do det_logs: endcons([cp[1], tower_scalar(T, cp[2])], det_logs),
+            for cl in rc[2] do (
+              got: realise_class_any(T, rc[1], [[cl[2], cl[3]]], cl[1], 12, verbose),
+              if got = false then pending_classes: endcons([cl[1], rc[1], cl[2], cl[3]], pending_classes)
+              else det_logs: endcons(got, det_logs)),
+            done: true)),
+        if ret = false and not done then (
+          taus: map(lambda([pt], resfmt(reduce_at(texpr, pt, Y))), pts),
+          if some(lambda([t], t = 'und or not freeof(inf, t) or not freeof(infinity, t)), taus) then
+            ret: ["failed", "residue undefined at the place", p]
+          else (
+            if verbose then (
+              if q = false then printf(true, "      residues ~a~%", string(taus))
+              else printf(true, "      places ~a: residues ~a~%", string(map(lambda([pt], sconcat("y=", string(pt[3]))), pts)), string(taus))),
+            cert: map(lambda([t], [certify_nonconstant(t, gens), t]), taus),
+            if some(lambda([ct], ct[1] = true), cert) then
+              ret: ["not elementary", p, second(first(sublist(cert, lambda([ct], ct[1] = true))))]
+            else if some(lambda([ct], ct[1] = 'undecided), cert) then
+              ret: ["failed", "residue constancy undecided", p, second(first(sublist(cert, lambda([ct], ct[1] = 'undecided))))]
+            else if every(lambda([t], pequal([t], [taus[1]])), taus) then (
+              if taus[1] # 0 then det_logs: endcons([taus[1], tower_scalar(T, p)], det_logs))
+            else if q # false and m >= 3 then (
+              got: realise_at_points(T, p, pts, taus, verbose),
+              if got = false then torsion: endcons([p, pts, taus], torsion)
+              else det_logs: append(det_logs, got))
+            else block([done2: false],
+              /* quadratic y-split (disc = s^2 q => factors 2a*g + b -+ s*y, norm identity
+                 N = 4a*p): try every generator direction */
+              if q # false then for gstar in gens while not done2 do block([cc, a, b, c, disc, s2, s, ok, pend, tv],
+                if poly_degree(p, gstar) = 2 then (
+                  cc: poly_coeffs(p, gstar), a: cc[1], b: cc[2], c: cc[3],
+                  if every(lambda([z], freeof(gstar, z)), [a, b, c]) and ratnump(a) then (
+                    disc: canon(b^2 - 4*a*c),
+                    s2: canon(disc/q),
+                    s: block([radexpand: all], sqrt(factor(s2))),
+                    if iszero(s^2 - s2) and not some(lambda([z], not free_of_all(gens, pm_pow_base(z))), pm_pows(s)) then (
+                      ok: true, pend: [],
+                      for sg in [1, -1] while ok do block([uu: [expand(2*a*gstar + b), -sg*s]],
+                        tv: map(second, sublist(makelist([pts[i], taus[i]], i, 1, length(pts)),
+                                                lambda([pt_tt], iszero(reduce_at(uu[1] + uu[2]*Y, pt_tt[1], Y))))),
+                        if tv # [] and every(lambda([tt], pequal([tt], [tv[1]])), tv) then pend: endcons([tv[1], uu], pend)
+                        else ok: false),
+                      if ok then (
+                        for tu in pend do (
+                          if tu[1] # 0 then det_logs: endcons(tu, det_logs),
+                          if verbose then printf(true, "      y-split factor ~a + (~a)*y: residue ~a~%", string(tu[2][1]), string(tu[2][2]), string(tu[1]))),
+                        done2: true))))),
+              if not done2 then (
+                got: realise_points(T, p, pts, taus, Y, verbose),
+                if got # false then det_logs: append(det_logs, got)
+                else torsion: endcons([p, pts, taus], torsion)))))))),
+  if ret # false then return(ret),
+  if pending_classes # [] then (
+    /* a residue class may be supported over several primes (as in A28): realise the
+       classes with equal value jointly */
+    groups: [],
+    for pc in pending_classes do block([placed: false],
+      for i thru length(groups) while not placed do
+        if groups[i][2] = pc[2] and iszero(groups[i][1] - pc[1]) then (
+          groups[i][3]: endcons([pc[3], pc[4]], groups[i][3]), placed: true),
+      if not placed then groups: endcons([pc[1], pc[2], [[pc[3], pc[4]]]], groups)),
+    unrealised: [],
+    for gr in groups do (
+      got: if length(gr[3]) > 1 then realise_class_any(T, gr[2], gr[3], gr[1], 12, verbose) else false,
+      if got = false then unrealised: endcons([apply("*", map(first, gr[3])), [gr[1]]], unrealised)
+      else det_logs: endcons(got, det_logs)),
+    if unrealised # [] then return(["needs torsion realisation (Parts I--II, milestone iii)", unrealised])),
+  if torsion # [] and m = 2 then (
+    /* the divisor may be realisable only jointly over several primes: by torsion on a
+       cubic model (Algorithm 3(d)), else by the norm search over the product of the primes */
+    got: torsion_realise(T, torsion, Y, 24, verbose),
+    if got = false then got: realise_joint(T, torsion, Y, verbose),
+    if got # false then (det_logs: append(det_logs, got), torsion: [])
+    else (
+      /* ... or not realisable at all: a provably non-torsion component (Proposition 9.4) */
+      cert_data: nontorsion_divisor(T, torsion, verbose),
+      if cert_data # false then return(append(["not elementary", "residue divisor not torsion: reduction mod p"], cert_data)))),
+  if torsion # [] then return(["needs torsion realisation (Parts I--II, milestone iii)", map(lambda([tr], [tr[1], tr[3]]), torsion)]),
+  /* residue at the hypertangent place at infinity (Lemma 8.1) */
+  if q # false and length(gens) >= 2 then (
+    tinf: vinfty_residue(T, f, Y),
+    if tinf # false then (
+      if verbose then printf(true, "  v_oo (hypertangent top): delta = 1, v_oo(f) = -1, residue ~a~%", string(tower_to_Y(T, tinf, 'y))),
+      lower: rest(gens, -1),
+      nonconst: is(some(lambda([c], canon(c) # 0), rest(tinf)) or certify_nonconstant(tinf[1], lower) = true),
+      if nonconst then return(["not elementary", "v_oo", tinf]))),
+  /* tower specials (Theorem 6.1): offered regardless of the integrand */
+  seen: map(first, unk_logs),
+  cand: [],
+  for dpair in append(T@derivs, if q # false then rest(T@Dw) else []) do
+    for comp in dpair do if comp # 0 then
+      for part in num_den(canon(comp)) do if not free_of_all(gens, part) then
+        for fp in factor_terms(part, gens) do if not free_of_all(gens, fp[1]) then cand: cons(fp[1], cand),
+  cand: sort(unique(cand), 'ordergreatp),
+  for pp in cand do if not member(pp, seen) then
+    if an_classify(pp)[4] then (
+      unk_logs: endcons([pp, 0], unk_logs), seen: cons(pp, seen),
+      if verbose then printf(true, "  tower special: candidate log(~a)~%", string(pp))),
+  /* residue-invisible unit candidates (Remark 7.7): m = 2 by the continued fraction of
+     sqrt(q) (pell), m >= 3 by the bounded divisor search at the places at infinity */
+  if q # false then block([done: false],
+    for g in gens while not done do if free_of_all(sublist(gens, lambda([z], z # g)), q) then (
+      done: true,
+      if m = 2 and evenp(poly_degree(q, g)) then (
+        uu: fundamental_unit(q, g, 60),
+        if uu # false then (
+          units: endcons([[uu[1], uu[2]], uu[3]], units),
+          if verbose then printf(true, "  unit candidate: A + B*y with deg_~a B = ~a~%", string(g), poly_degree(uu[2], g)))
+        else (
+          cert: nontorsion_certificate(q, g, 4, 1000),
+          if cert[1] then (
+            if verbose then printf(true, "  unit search inconclusive; [oo+ - oo-] certified non-torsion by reduction mod p: ~a~%", string(cert[2])),
+            units_complete: true)
+          else units_complete: false))
+      else if m >= 3 and const_coeffs_p(q, g, gens) then (
+        for uu in units_general(T, g, false, verbose) do units: endcons([uu, false], units),
+        units_complete: is(gcd(m, poly_degree(q, g)) = 1)))),
+  /* residual integrand */
+  rem: f,
+  for tu in det_logs do block([ld],
+    ld: if q # false then tower_div(T, tower_D(T, tu[2]), tu[2]) else [canon(tower_D(T, tu[2])[1]/tu[2][1]), 0],
+    rem: padd(rem, pscale(-tu[1], ld))),
+  new(pmanalysis(T, f, Y, det_logs, unk_logs, denv, units, units_complete, rem, verbose, [], [], [], [], [])))$
+
+pm_substring_p(needle, s) := is(stringp(s) and ssearch(needle, s) # false)$
+
+/* the factors of d over the extension (extension given as a minimal polynomial); the
+   plain factorisation otherwise */
+factor_terms_ext(d, gens, extension) := block([f: factor(d, extension), out: []],
+  fte_one(t) := if free_of_all(gens, t) then false
+    else if not atom(t) and op(t) = "-" then fte_one(first(args(t)))
+    else if not atom(t) and op(t) = "^" then out: cons([first(args(t)), second(args(t))], out)
+    else out: cons([t, 1], out),
+  if not atom(f) and op(f) = "-" then f: first(args(f)),
+  if not atom(f) and op(f) = "*" then map(fte_one, args(f)) else fte_one(f),
+  reverse(out))$
+
+/* ---------------------------------------------------------------- bounds at the places (S8.2) */
+
+/* v_oo(e) = deg_g(den) - deg_g(num) of a rational function; inf for 0 */
+ord_inf(e, g) := block([c: canon(e), nd],
+  if c = 0 then return(inf),
+  nd: num_den(c),
+  poly_degree(nd[2], g) - poly_degree(nd[1], g))$
+
+/* leading coefficient at g = oo (a function of the other generators) */
+lc_inf(e, g) := block([nd: num_den(canon(e))], canon(poly_lc(nd[1], g)/poly_lc(nd[2], g)))$
+
+/* the lowest exponent of u in a nonzero truncated series (general form) */
+pm_low_exp(ser, u) := lmin(map(lambda([t_], second(pm_coeff_exp(t_, u))), if not atom(ser) and op(ser) = "+" then args(ser) else [ser]))$
+pm_coeff_exp(t_, u) := block([r: rat(t_), lo], lo: ratp_lopow(ratnumer(r), u) - ratp_lopow(ratdenom(r), u), [ratcoef(t_, u, lo), lo])$
+
+/* v_inf(T, u, g): valuations of the list u at the places over g = oo, one entry per
+   place in the units of its uniformiser, and whether they are exact: [vals, exact].
+   For m <= 2 exact (a series at the two unramified places when the two coordinates
+   could cancel); for m >= 3 with g in q the Gauss lower bound of Part I, S6.1. */
+v_inf(T, u, g) := block([q: T@q, m: T@m, d, s_, e_, dp, vals, a, b, va, vb, vy, uu, qs, out: [], expr, ser, found],
+  u: tower_pad(T, u),
+  if q = false or freeof(g, q) then return([[lmin(map(lambda([c], ord_inf(c, g)), u))], true]),
+  d: poly_degree(q, g),
+  if m >= 3 then (
+    s_: gcd(m, d), e_: m/s_, dp: d/s_,
+    vals: [],
+    for i: 0 thru m - 1 do if u[i + 1] # 0 then
+      vals: endcons(e_*ord_inf(u[i + 1], g) - (i*dp - e_*(if (T@E)[i + 1] # 1 then poly_degree((T@E)[i + 1], g) else 0)), vals),
+    return([makelist(if vals = [] then inf else lmin(vals), j, 1, s_), false])),
+  a: u[1], b: u[2],
+  va: ord_inf(a, g), vb: ord_inf(b, g),
+  if oddp(d) then return([[min(2*va, 2*vb - d)], true]),          /* ramified: parities differ */
+  vy: -d/2,
+  if a = 0 or b = 0 or va # vb + vy then return([[min(va, vb + vy), min(va, vb + vy)], true]),
+  uu: gensym("u"),
+  qs: expand(subst(1/uu, g, q)*uu^d),                              /* q(1/u) u^d, a unit at u = 0 */
+  for sg in [1, -1] do (
+    expr: subst(1/uu, g, a) + sg*subst(1/uu, g, b)*sqrt(qs)/uu^(d/2),
+    found: false,
+    for order in [va + 4, va + 12, va + 30] while not found do (
+      ser: expand(ratdisrep(taylor(expr, uu, 0, order))),
+      if ser # 0 then (out: endcons(pm_low_exp(ser, uu), out), found: true)),
+    if not found then out: endcons(inf, out)),
+  [out, true])$
+
+/* 'prim, 'exp or 'tan if t_k is a primitive, hyperexponential or hypertangent monomial
+   over the field below it, else 'other */
+kind(T, k) := block([g: (T@gens)[k], above, res: 'other],
+  above: rest(T@gens, k - 1),
+  for kd in [['prim, 1], ['exp, g], ['tan, 1 + g^2]] while res = 'other do
+    if every(lambda([c], free_of_all(above, canon(c/kd[2]))), (T@derivs)[k]) then res: kd[1],
+  res)$
+
+/* no other generator's derivative, nor q, involves t_i */
+independent(T, i) := block([g: (T@gens)[i]],
+  if T@q # false and not freeof(g, T@q) then return(false),
+  not some(lambda([k], not every(lambda([c], freeof(g, c)), (T@derivs)[k])),
+           sublist(makelist(k, k, 1, length(T@gens)), lambda([k], k # i))))$
+
+/* the leading coefficients of the list u at the places over g = oo, one per place as
+   in v_inf, or false where the implementation does not read them (m >= 3, a ramified
+   place, a coordinate carrying y off the curve variable); memoised on the tower */
+lc_place(T, u, g) := block([q: T@q, m: T@m, d, a, b, key, cached, va, uu, qs, out: [], expr, ser, found, k],
+  u: tower_pad(T, u),
+  if q = false or freeof(g, q) then (
+    if u[1] = 0 or some(lambda([c], c # 0), rest(u)) then return(false),
+    return([lc_inf(u[1], g)])),
+  d: poly_degree(q, g),
+  a: u[1], b: u[2],
+  if m >= 3 or oddp(d) or (a = 0 and b = 0) then return(false),
+  key: cache_key([u, g]),
+  cached: assoc(key, T@lcp),
+  if cached # false then return(cached),
+  va: min(ord_inf(a, g), ord_inf(b, g) - d/2),
+  uu: gensym("u"),
+  qs: expand(subst(1/uu, g, q)*uu^d),
+  for sg in [1, -1] do (
+    expr: subst(1/uu, g, a) + sg*subst(1/uu, g, b)*sqrt(qs)/uu^(d/2),
+    found: false,
+    for order in [va + 4, va + 12, va + 30] while not found do (
+      ser: expand(ratdisrep(taylor(expr, uu, 0, order))),
+      if ser # 0 then (k: pm_low_exp(ser, uu), out: endcons(canon(ratcoef(ser, uu, k)), out), found: true)),
+    if not found then return(false)),
+  T@lcp: cons([key, out], T@lcp),
+  out)$
+
+/* a canonical key for the hashed caches: general form of the CRE */
+cache_key(e) := if listp(e) then map(cache_key, e) else ratdisrep(rat(e))$
+
+/* the class of e / pp^n modulo the prime pp of F[g] when it is a constant of Fbar (a
+   number), else false */
+class_mod(e, pp, g, n, gens) := block([nd, ge, cls],
+  nd: errcatch(num_den(canon(e/pp^n))),
+  if nd = [] then return(false),
+  nd: first(nd),
+  ge: errcatch(gcdex(nd[2], pp, g)),
+  if ge = [] or poly_degree(first(ge)[3], g) > 0 then return(false),
+  cls: canon(remainder(expand(nd[1]*first(ge)[1]), pp, g)),
+  if free_of_all(gens, cls) then cls else false)$
+
+/* in_qspan(rho, mus): rho lies in the Q-span of the algebraic numbers mus: the
+   kernel-degree test of the extended (K1).  true on any failure, which leaves the
+   place to the guess. */
+in_qspan(rho, mus) := block([M, r, F],
+  if mus = [] then return(false),
+  r: errcatch(F: field_for(alg_atoms(cons(rho, mus))), M: apply(matrix, map(lambda([c], qcoords(F, c)), cons(rho, mus)))),
+  if r = [] then return(true),
+  is(rank(M) = rank(submatrix(1, M))))$
+
+/* hermite_log_part(f, x): the numerator of the remaining proper fraction after the
+   Hermite reduction of the rational function f in x (denominator squarefree); it is
+   nonzero iff the integral of f has a logarithmic part.  Replaces sympy's ratint in
+   the K3 test (Maxima's integrate leaves irreducible denominators unevaluated). */
+hermite_log_part(f, x) := block([nd, N, D, sf, i, V, U, ge, B, C, r],
+  nd: num_den(canon(f)),
+  N: nd[1], D: nd[2],
+  if freeof(x, D) then return(0),
+  N: remainder(N, D, x),
+  sf: sqf_factors(D, [x]),
+  while (i: lmax(cons(1, map(second, sf))), i >= 2) do (
+    V: apply("*", map(first, sublist(sf, lambda([fl], second(fl) = i)))),
+    U: canon(D/V^i),
+    /* N = B U V' + C V  (gcd(V, U V') = 1) */
+    ge: gcdex(expand(U*diff(V, x)), V, x),               /* [s, t, 1]: s U V' + t V = 1 */
+    B: remainder(expand(N*first(ge)), V, x),
+    C: canon((N - B*U*diff(V, x))/V),
+    /* B V'/V^i = -(B/((i-1) V^(i-1)))' + B'/((i-1) V^(i-1)) */
+    N: expand((i - 1)*C + diff(B, x)*U),
+    D: expand((i - 1)*U*V^(i - 1)),
+    r: num_den(canon(N/D)), N: r[1], D: r[2],
+    if freeof(x, D) then return(0),
+    sf: sqf_factors(D, [x])),
+  canon(N))$
+
+/* decide(T, own, mono, s, shifts, sig_pi, lam, rho_free, rho_r, consts): Algorithm 6,
+   Step 3: the criterion (K1)-(K4) of Proposition 8.11 that proves the bound at the
+   place, or false.  own: the generators of the place; mono: the index of the monomial
+   the place belongs to or false; shifts: association list generator -> shift; lam:
+   association list generator -> the symbols of its leading coefficient; rho_free: the
+   leading coefficient of D pi is free of the attaining generators; rho_r: that
+   coefficient when kappa = F(x) (K3), else false; consts: a record for
+   place_consts (the values at the place of rho and of the mu_k), or false. */
+decide(T, own, mono, s, shifts, sig_pi, lam, rho_free, rho_r, consts) := block(
+  [gens: T@gens, r, A_, kinds, exps, vals, upper, x, R],
+  r: sig_pi - s,
+  A_: sublist(gens, lambda([gk], assoc(gk, shifts, 'none) = s and not member(gk, own))),
+  kinds: map(lambda([gk], [gk, kind(T, pm_index(gens, gk))]), A_),
+  if mono # false and kind(T, mono) # 'other and independent(T, mono) then return('K2),
+  if r = 0 and rho_free and every(lambda([gk_kd], member(gk_kd[2], ['prim, 'exp]) and pm_disjoint(assoc(gk_kd[1], lam), A_)), kinds) then (
+    exps: map(first, sublist(kinds, lambda([gk_kd], gk_kd[2] = 'exp))),
+    if exps = [] then return('K1),
+    vals: if consts # false then place_consts(consts, cons('pi, exps)) else false,
+    if vals # false and every(lambda([nv], second(nv) # false and pm_constantp(second(nv))), vals)
+       and not in_qspan(assoc('pi, vals), map(lambda([gk], assoc(gk, vals)), exps)) then return('K1)),
+  if r >= 1 and rho_r # false then (
+    x: gens[1],
+    if hermite_log_part(canon(rho_r), x) # 0 then return('K3)),
+  upper: sublist(gens, lambda([gk], not member(gk, own))),
+  if r >= 1 and rho_free and own # [] and T@q # false and upper # [] and every(lambda([gk], member(gk, A_)), upper)
+     and every(lambda([gk], member(assoc(gk, kinds), ['exp, 'tan])), upper)
+     and every(lambda([gk], assoc(gk, lam) = []), upper)
+     and length(sublist(upper, lambda([gk], assoc(gk, kinds) = 'exp))) <= 1 then return('K4),
+  false)$
+
+pm_disjoint(L1, L2) := is(L1 = [] or every(lambda([z], not member(z, L2)), L1))$
+
+/* the symbols of the leading coefficient of D t_k (of D t_k / t_k, of D t_k / (1 + t_k^2)
+   for a hyperexponential, hypertangent t_k) other than those of the place, which
+   reduce to constants there; at g = oo the leading coefficient in g, at an affine
+   prime the whole coefficient.  g = false for an affine prime. */
+lam_syms(T, k, own, g) := block([gk: (T@gens)[k], kd, div, comps],
+  kd: kind(T, k),
+  div: if kd = 'prim then 1 else if kd = 'exp then gk else if kd = 'tan then 1 + gk^2 else 1,
+  comps: map(lambda([c], canon(c/div)), sublist((T@derivs)[k], lambda([c], c # 0))),
+  if g # false then comps: map(lambda([c], lc_inf(c, g)), comps),
+  if comps = [] then [] else sublist(unique(apply(append, map(pm_symbols, comps))), lambda([v], not member(v, own))))$
+
+/* the free symbols (non-constant atoms) of an expression */
+pm_symbols(e) := sublist(listofvars(e), lambda([v], not constantp(v)))$
+
+/* the values of rho ('pi) and of the named hyperexponential generators at a place, from
+   the record consts = ['inf, g, pl] or ['spec, pp, Dpi, s, g]; an association list
+   name -> value (false where not read) */
+place_consts(consts, names) := if first(consts) = 'inf then inf_consts(consts[2], consts[3], consts[4], names)
+  else special_consts(consts[2], consts[3], consts[4], consts[5], consts[6], names)$
+
+/* Algorithm 6 at the places over t_i = oo for every generator, computed once per
+   analysis: per generator [criterion or false, e_P, the list of [s, r, v_P(rem)] over
+   the places, chain-possible] */
+inf_data(A) := block([T: A@T, rem: A@rem, gens, q, m, curve, out: [], own, items, exact, vrem, d, e_P, lam, rho_syms, rho_r, crit, places, chain, shifts, s, r, A_, c_],
+  if A@infd # [] then return(A@infd),
+  gens: T@gens, q: T@q, m: T@m,
+  curve: sublist(gens, lambda([g], q # false and not freeof(g, q))),
+  for i thru length(gens) do block([g: gens[i]],
+    own: if member(g, curve) then curve else [g],
+    items: makelist([gens[k], v_inf(T, (T@derivs)[k], g), first(first(v_inf(T, tower_scalar(T, gens[k]), g)))], k, 1, length(gens)),
+    if q # false then items: endcons(['y, v_inf(T, (T@Dw)[2], g), first(first(v_inf(T, tower_unit(T, 1), g)))], items),
+    exact: every(lambda([it], second(second(it))), items),
+    vrem: first(v_inf(T, rem, g)),
+    d: if member(g, curve) then poly_degree(q, g) else 0,
+    e_P: if not member(g, curve) then 1 else if m = 2 and oddp(d) then 2 else if m = 2 then 1 else m/gcd(m, d),
+    lam: makelist([gens[k], lam_syms(T, k, own, g)], k, 1, length(gens)),
+    rho_syms: sublist(unique(apply(append, map(lambda([c], pm_symbols(lc_inf(c, g))), sublist((T@derivs)[i], lambda([c], c # 0))))), lambda([v], not member(v, own))),
+    rho_r: if q = false and length(gens) = 2 and i = 2 and (T@derivs)[1][1] = 1 then -lc_inf((T@derivs)[2][1], g) else false,
+    crit: false, places: [], chain: false,
+    for pl thru length(vrem) while chain # 'stop do (
+      shifts: map(lambda([it], [first(it), first(second(it))[pl] - third(it)]), sublist(items, lambda([it], first(second(it))[pl] # inf))),
+      s: lmin(map(second, shifts)),
+      r: assoc(g, shifts) - s,
+      A_: sublist(gens, lambda([gk], assoc(gk, shifts, 'none) = s and not member(gk, own))),
+      c_: if exact then decide(T, own, i, s, shifts, assoc(g, shifts), lam, pm_disjoint(rho_syms, A_), rho_r, ['inf, T, g, pl]) else false,
+      if c_ = false then (
+        crit: false,
+        chain: is(r >= 1 and some(lambda([gk], kind(T, pm_index(gens, gk)) = 'prim), A_)),
+        chain: if chain then 'stop_true else 'stop)
+      else (
+        if crit = false then crit: c_,
+        places: endcons([s, r, vrem[pl]], places))),
+    chain: is(chain = 'stop_true),
+    out: endcons([crit, e_P, places, chain], out)),
+  A@infd: out,
+  out)$
+
+/* Algorithm 6 at the places over the special pp: [criterion or false, s, r, e_P, branch];
+   the derivatives being defined over F, a factor split off a constant-coefficient
+   special shares the data of its parent */
+special_data(A, pp) := block([T: A@T, gens, q, m, parent, cached, branch, own, shifts: [], exact, vD, dk, pi, Dpi, sig_pi, s, A_, lam, rho_free, mono, i, kd, consts, crit, res],
+  cached: assoc(pp, A@spec),
+  if cached # false then return(cached),
+  gens: T@gens, q: T@q, m: T@m,
+  parent: analysis_parent(A, pp),
+  if parent # false then (res: special_data(A, parent), A@spec: cons([pp, res], A@spec), return(res)),
+  branch: is(q # false and vp(q, pp, gens) > 0),
+  own: sublist(gens, lambda([gk], not freeof(gk, pp))),
+  sd_vp(u) := vP(u, pp, T, branch),
+  exact: not branch,
+  for k thru length(gens) do (
+    vD: sd_vp((T@derivs)[k]),
+    if vD # inf then shifts: endcons([gens[k], vD - sd_vp(tower_scalar(T, gens[k]))], shifts),
+    dk: (T@derivs)[k],
+    if q # false and dk[1] # 0 and dk[2] # 0 and vp(dk[1], pp, gens) = vp(dk[2], pp, gens) then exact: false),
+  if q # false then (
+    vD: sd_vp((T@Dw)[2]),
+    if vD # inf then shifts: endcons(['y, vD - sd_vp(tower_unit(T, 1))], shifts)),
+  pi: if branch then tower_unit(T, 1) else tower_scalar(T, pp),
+  Dpi: tower_D(T, pi),
+  sig_pi: sd_vp(Dpi) - sd_vp(pi),
+  s: lmin(cons(sig_pi, map(second, shifts))),
+  A_: sublist(gens, lambda([gk], assoc(gk, shifts, 'none) = s and not member(gk, own))),
+  lam: makelist([gens[k], lam_syms(T, k, own, false)], k, 1, length(gens)),
+  rho_free: is(not branch and pm_disjoint(unique(apply(append, map(lambda([c], pm_symbols(canon(c))), sublist(Dpi, lambda([c], c # 0))))), A_)),
+  mono: false,
+  if length(own) = 1 then (
+    i: pm_index(gens, first(own)),
+    kd: kind(T, i),
+    if (kd = 'exp and expand(pp - gens[i]) = 0) or (kd = 'tan and expand((pp - gens[i])^2 + 1) = 0) then mono: i),
+  consts: if not branch and length(own) = 1 then ['spec, T, pp, Dpi, s, first(own)] else false,
+  crit: if exact then decide(T, own, mono, s, shifts, sig_pi, lam, rho_free, false, consts) else false,
+  res: [crit, s, sig_pi - s, if branch then m else 1, branch],
+  A@spec: cons([pp, res], A@spec),
+  res)$
+
+/* rho ('pi, the coefficient of pi^(s+1) in D pi = -D g pi^2) and the mu_k of the named
+   hyperexponential generators at the pl-th place over g = oo, as numbers where
+   lc_place reads them, else false */
+inf_consts(T, g, pl, names) := block([gens: T@gens, out: [], u, lc],
+  for nm in names do (
+    u: if nm = 'pi then map(lambda([c], -c), (T@derivs)[pm_index(gens, g)])
+       else map(lambda([c], canon(c/nm)), (T@derivs)[pm_index(gens, nm)]),
+    lc: lc_place(T, u, g),
+    out: endcons([nm, if lc # false and pl <= length(lc) then lc[pl] else false], out)),
+  out)$
+
+/* the same at the places over the special pp = pi of F[g]: the classes of
+   D pi / pi^(s+1) and of (D t_k / t_k) / pi^s modulo pp, when they are constants of
+   Fbar, the same at every place over pp */
+special_consts(T, pp, Dpi, s, g, names) := block([gens: T@gens, out: [], u, n, cls],
+  for nm in names do (
+    u: if nm = 'pi then Dpi else map(lambda([c], canon(c/nm)), (T@derivs)[pm_index(gens, nm)]),
+    n: if nm = 'pi then s + 1 else s,
+    cls: map(lambda([c], if c # 0 then class_mod(c, pp, g, n, gens) else 0), u),
+    out: endcons([nm, if first(cls) # false and every(lambda([c], c = 0), rest(cls)) then first(cls) else false], out)),
+  out)$
+
+/* place_bounds(A, unk_logs, retry, verbose): Step 15 of Algorithm 4 by Algorithm 6: the
+   exponent of every special prime and the degree bound in every generator, from the
+   shift of the derivation at the places over sigma and over t_i = oo (Theorem 8.7,
+   Corollary 8.9); the classical guess, raised by the retry count, at the places where
+   Proposition 8.11 is silent.  Returns [bounds, exps, proved], exps an association
+   list [[pp, exponent], ...]. */
+place_bounds(A, unk_logs, retry, verbose) := block([T: A@T, rem: A@rem, gens, q, nc, crits_g: [], crits_s: [], exps: [], sd, crit, s, r, e_P, branch, parent, vg, ex, denv, nb, db, bounds, b, proved, idata],
+  gens: T@gens, q: T@q,
+  nc: if q # false then T@n else 1,
+  for pl in unk_logs do block([pp: pl[1]],
+    sd: special_data(A, pp),
+    crit: sd[1], s: sd[2], r: sd[3], e_P: sd[4], branch: sd[5],
+    parent: analysis_parent(A, pp),
+    vg: vP(rem, if parent # false then parent else pp, T, branch),   /* a lower bound at the factor */
+    ex: if crit # false then ceiling(max(0, s - vg + r)/e_P) else max(0, -vg) + retry,
+    exps: endcons([pp, ex], exps),
+    crits_s: endcons([pp, crit], crits_s)),
+  denv: A@denv,
+  for pe in exps do denv: denv*pe[1]^pe[2],
+  nb: makelist(first(num_den(rem[i])), i, 1, nc),
+  db: makelist(second(num_den(rem[i]))*denv, i, 1, nc),
+  bounds: makelist(false, i, 1, length(gens)),
+  idata: inf_data(A),
+  for i: length(gens) thru 1 step -1 do block([g: gens[i], chain, places],
+    crit: idata[i][1], e_P: idata[i][2], places: idata[i][3], chain: idata[i][4],
+    if crit # false then
+      b: poly_degree(denv, g) + lmax(map(lambda([srv], ceiling((max(0, srv[1] - srv[3]) + srv[2])/e_P)), places))
+    else (
+      b: lmax(map(lambda([P], poly_degree(P, g)), append(nb, db))) + 2,
+      if chain then b: b + lmax(cons(0, makelist(bounds[k], k, i + 1, length(gens))))),
+    bounds[i]: b,
+    crits_g: endcons([g, crit], crits_g)),
+  proved: every(lambda([gc], second(gc) # false), append(crits_g, crits_s)),
+  if verbose then printf(true, "  bounds: ~a~a~a~%",
+    pm_join(makelist(sconcat(string(gens[k]), ": ", string(bounds[k]), " [", if assoc(gens[k], crits_g) = false then "guess" else string(assoc(gens[k], crits_g)), "]"), k, 1, length(gens)), ", "),   /* in generator order, as the Python */
+    if exps # [] then sconcat(";  specials: ", pm_join(map(lambda([pe], sconcat("(", string(pe[1]), ")^", pe[2], " [", if assoc(pe[1], crits_s) = false then "guess" else string(assoc(pe[1], crits_s)), "]")), exps), ", ")) else "",
+    if proved then "  (all proved)" else "  (a guess is in play)"),
+  [bounds, exps, proved])$
+
+pm_join(L, sep) := if L = [] then "" else block([s: first(L)], for z in rest(L) do s: sconcat(s, sep, z), s)$
+/* the product prod pp^e of an exponent association list (tests) */
+pm_prod_exps(exps) := apply("*", cons(1, map(lambda([pe], pe[1]^pe[2]), exps)))$
+
+/* ---------------------------------------------------------------- number fields */
+/* The constants of an integrand and of its residues are algebraic numbers that Maxima's
+   rat handles as kernels (radicals of integers, %i, nested radicals) under
+   algebraic:true.  Two kernels may be algebraically dependent without rat knowing it
+   (sqrt(2 sqrt5 + 2) sqrt(2 sqrt5 - 2) = 4, the splitting field of Charlwood's P4), and
+   then gcd, quotients and zero tests over the constants fail.  The exact remedy is the one
+   of parallel_mixed.py (_KConv): ONE primitive element theta of the field generated by
+   the atoms, every constant a polynomial in theta, arithmetic under tellrat(minpoly).
+   Here the minimal polynomials come from resultants, the primitive element from
+   theta' = theta + k a with the coordinates of a by a gcd over Q(theta') (SymPy's
+   primitive_element), and factoring over Q(theta) from Trager's norm; the only numeric
+   step is choosing, among the irreducible factors of a resultant, the one vanishing at
+   the known numeric value (60 digits).  The atoms are kept structurally as alg_atoms
+   returns them (sqrt(6) and sqrt(2)*sqrt(3) are simply different atoms). */
+defstruct(pmfield(atoms, theta, thetaval, minpoly, degree, coords))$
+
+/* normalise an algebraic constant: radicals of integers split into prime-base radicals
+   so that sqrt(2)*sqrt(3) and sqrt(6) meet (P4f-h of the probes); used by the zero tests */
+kernel_normal(e) := ratsimp(radcan(e))$          /* radcan: sqrt(6) -> sqrt(2)*sqrt(3), 6^(5/2) -> 2^(5/2)*3^(5/2) */
+
+/* the CRE kernels (radicals, %i) of a constant, as a variable list */
+pm_kernels(e) := showratvars(rat(e))$
+
+/* the numeric value of a constant, 60 digits */
+nf_num(e) := block([fpprec: 60], rectform(bfloat(rectform(e))))$
+nf_dist(e, v) := block([fpprec: 60], cabs(rectform(bfloat(rectform(e))) - v))$
+
+/* the irreducible factor over Q of the polynomial P in z that vanishes at the numeric
+   value v (monic) */
+nf_pick_factor(P, z, v) := block([best: false, bestv: false, val],
+  for fm in factor_terms(P, [z]) do (
+    val: block([fpprec: 60], cabs(bfloat(rectform(subst(v, z, fm[1]))))),
+    if bestv = false or val < bestv then (best: fm[1], bestv: val)),
+  if best = false then error("nf_pick_factor: no factor", P),
+  expand(best/poly_lc(best, z)))$
+
+/* nf_minpoly(a, z): the exact minimal polynomial over Q of the algebraic atom a: %i,
+   a radical b^(1/n) of a rational b, or a nested radical (through the field of its
+   radicand and a resultant) */
+nf_minpoly(a, z) := block([pp, b, n, Fb, bK, t: gensym("t"), N],
+  if ratnump(a) then return(z - a),
+  if a = %i then return(z^2 + 1),
+  pp: pm_pow_parts(a),
+  if pp = false then error("nf_minpoly: not an algebraic atom", a),
+  b: pp[1], n: denom(pp[2]),
+  if ratnump(b) then return(nf_pick_factor(z^n - b, z, nf_num(a))),
+  Fb: field_for(alg_atoms([b])),
+  nf_on(Fb), bK: subst(t, Fb@theta, kconv(Fb, b)), nf_off(Fb),
+  N: expand(resultant(subst(t, Fb@theta, Fb@minpoly), z^n - bK, t)),
+  nf_pick_factor(N, z, nf_num(a)))$
+
+/* field_for(atoms): the field Q(atoms) with a primitive element theta (a symbol; the
+   relation tellrat(minpoly) is switched on by nf_on while the field is in use);
+   coords is the association list atom -> polynomial in theta */
+/* remove every tellrat relation left behind by an interrupted field computation (the
+   relations live in the global tellratlist; a stale one on an old theta breaks gcds) */
+nf_reset() := for rel in tellrat() do
+  for v in listofvars(rel) do if symbolp(v) and smismatch("theta", string(v)) > 5 then untellrat(v)$
+
+field_for(atoms) := block([F, th: gensym("theta"), z: gensym("z"), u: gensym("u"), atoms2, ma, mp, thv, ok, k, R, mp2, G, acoord, newcoords],
+  nf_reset(),
+  atoms2: sort(unique(atoms), lambda([a, b], pm_size(a) > pm_size(b))),   /* nested atoms first */
+  atoms2: sublist(atoms2, lambda([a], not ratnump(a))),
+  F: new(pmfield(atoms2, th, 0, th, 1, [])),
+  if atoms2 = [] then return(F),
+  for a in atoms2 do (
+    ma: nf_minpoly(a, z),
+    if F@degree = 1 then (F@thetaval: a, F@minpoly: subst(th, z, ma), F@degree: hipow(expand(ma), z), F@coords: [[a, th]])
+    else (
+      ok: false,
+      for k thru 12 while not ok do (
+        /* theta' = theta + k a: the minimal polynomial from the resultant, the coordinates
+           of a from gcd(m_a(z), m_theta(theta' - k z)) over Q(theta') */
+        thv: F@thetaval + k*a,
+        R: expand(resultant(subst(u, th, F@minpoly), expand(k^poly_degree(ma, z)*subst((z - u)/k, z, ma)), u)),
+        mp2: nf_pick_factor(R, z, nf_num(thv)),
+        mp2: subst(th, z, mp2),
+        tellrat(mp2),
+        G: errcatch(gcd(subst(z, th, ma), expand(subst(th - k*z, th, F@minpoly)), z)),
+        if G # [] and poly_degree(first(G), z) = 1 then (
+          G: first(G),
+          acoord: ratsimp(-subst(0, z, G)/ratcoef(G, z, 1)),
+          /* the earlier atoms: theta = theta' - k a */
+          newcoords: map(lambda([ac], [ac[1], ratsimp(subst(th - k*acoord, th, ac[2]))]), F@coords),
+          F@coords: endcons([a, acoord], newcoords),
+          F@minpoly: mp2, F@degree: hipow(expand(mp2), th), F@thetaval: thv,     /* not poly_degree: tellrat is in force */
+          ok: true),
+        untellrat(th)),
+      if not ok then error("field_for: no primitive element for", atoms2))),
+  F)$
+
+nf_on(F) := if F@degree > 1 then tellrat(F@minpoly) else false$
+nf_off(F) := if F@degree > 1 then untellrat(F@theta) else false$
+
+/* kconv(F, e): the constant (or expression in the generators with algebraic constants)
+   with every atom replaced by its polynomial in theta, reduced (nf_on(F) must be in
+   force) */
+kconv(F, e) := block([r: e, ks],
+  if F@degree = 1 then return(e),
+  for ac in F@coords do r: ratsubst(ac[2], ac[1], r),   /* subst misses a radical once a neighbour was replaced */
+  r: ratsimp(r),
+  ks: sublist(pm_kernels(r), lambda([k], k # F@theta and not symbolp(k))),
+  if ks # [] then error("kconv: kernels outside the field survived the conversion:", ks, "of", e),
+  r)$
+/* kback(F, a): theta replaced by its value in the atoms */
+kback(F, a) := if F@degree = 1 then a else ratsimp(subst(F@thetaval, F@theta, a))$
+
+/* qcoords(F, e): the coordinates over Q of a constant on the power basis of theta */
+qcoords(F, e) := if F@degree = 1 then [ratsimp(e)]
+  else block([a], nf_on(F), a: expand(kconv(F, e)), nf_off(F), makelist(ratcoef(a, F@theta, j), j, 0, F@degree - 1))$
+
+/* the minimal polynomial of theta as a coefficient list, highest first (false for Q) */
+field_minpoly_list(F) := if F@degree = 1 then false else poly_coeffs(F@minpoly, F@theta)$
+
+/* does the arithmetic on these atoms need the field? (more than one kernel, or a nested
+   radical: the dependencies among them are invisible to rat) */
+nf_needs_field(atoms) := block([a2: sublist(unique(atoms), lambda([a], not ratnump(a)))],
+  is(length(a2) >= 2 or some(lambda([a], a # %i and pm_pow_parts(a) # false and not ratnump(pm_pow_base(a))), a2)))$
+
+/* nf_factor(p, g, F): the irreducible factors of the polynomial p in g over Q(theta)
+   (p written in theta) as [[factor, multiplicity], ...], by Trager's norm: N(g) =
+   res_theta(minpoly, p(g - s theta)) is factored over Q and each factor pulled back by a
+   gcd over Q(theta).  nf_on(F) must NOT be in force on entry (it is switched on inside). */
+nf_factor(p, g, F) := block([t: gensym("t"), s: 0, N, sq: 'none, out: [], pK, fac, mult, pt, rem_],
+  if F@degree = 1 then return(factor_terms(p, [g])),
+  pt: subst(t, F@theta, p),
+  for s_ : 0 thru 20 while sq # true do (
+    s: s_,
+    N: expand(resultant(subst(t, F@theta, F@minpoly), expand(subst(g - s*t, g, pt)), t)),
+    sq: is(hipow(expand(gcd(N, diff(N, g), g)), g) = 0)),
+  if sq # true then error("nf_factor: no squarefree norm for", p),
+  nf_on(F),
+  pK: p,
+  for fm in factor_terms(N, [g]) do (
+    fac: gcd(pK, expand(subst(g + s*F@theta, g, fm[1])), g),
+    fac: ratsimp(fac/poly_lc(fac, g)),
+    if poly_degree(fac, g) >= 1 then (
+      mult: 0,
+      while (rem_: divide(pK, fac, g), canon(rem_[2]) = 0) do (mult: mult + 1, pK: ratsimp(rem_[1])),
+      if mult > 0 then out: endcons([expand(fac), mult], out))),
+  nf_off(F),
+  out)$
+
+/* qbasis_divisors(F, taus): the residues taus (constants of the field F) over a Q-basis
+   of their Q-span (Algorithm 3(d)): [[beta_j, ns_j], ...] with ns_j integer vectors and
+   tau_i = sum_j ns_j[i] beta_j, so that the divisor sum_i tau_i P_i is sum_j beta_j D_j
+   with D_j = sum_i ns_j[i] P_i; beta_j is the residue at the j-th pivot divided by the
+   common denominator of its row */
+qbasis_divisors(F, taus) := block([A, Rr, piv, out: [], N, row],
+  A: transpose(apply(matrix, map(lambda([tau], qcoords(F, tau)), taus))),   /* column i: the residue tau_i */
+  [Rr, piv]: pm_rref(A),
+  for j thru length(piv) do (
+    row: makelist(Rr[j, i], i, 1, length(taus)),
+    N: apply(lcm, cons(1, map(denom, row))),
+    out: endcons([taus[piv[j]]/N, map(lambda([z], N*z), row)], out)),
+  out)$
+
+/* reduced row echelon form of a matrix over Q with the pivot columns: [R, pivots] */
+pm_rref(A) := block([M: copymatrix(A), nr, nc, piv: [], r: 1, pc, p],
+  nr: length(M), nc: length(M[1]),
+  for c thru nc while r <= nr do (
+    p: false,
+    for i: r thru nr while p = false do if M[i, c] # 0 then p: i,
+    if p # false then (
+      if p # r then (row: M[p], M[p]: M[r], M[r]: row),
+      M[r]: M[r]/M[r, c],
+      for i thru nr do if i # r and M[i, c] # 0 then M[i]: M[i] - M[i, c]*M[r],
+      piv: endcons(c, piv), r: r + 1)),
+  [M, piv])$
+
+/* torsion_realise(T, pending, Y, bound, verbose): Algorithm 3(d): the residue divisor of
+   the pending primes [[p, pts, taus], ...] on an elliptic curve with one place at
+   infinity (deg q = 3, constant coordinates).  A place whose class [P - oo] is torsion
+   of order mu is realised on its own by its Miller function; the residues of the
+   remaining places are decomposed over a Q-basis (beta_j) of their Q-span, so that the
+   divisor is sum_j beta_j D_j with D_j = sum_P n_Pj (P - oo) of degree 0, each realised
+   by the group law.  Returns [[coefficient, pair], ...] or false. */
+torsion_realise(T, pending, Y, bound, verbose) := block([g, q: T@q, places, consts, E, out: [], rest_: [], P, got, F, terms, dv],
+  g: pending[1][2][1][1],
+  if poly_degree(q, g) # 3 or not free_of_all(sublist(T@gens, lambda([z], z # g)), q)
+     or some(lambda([pp], pp[2][1][1] # g), pending) then return(false),
+  places: apply(append, map(lambda([pp], sublist(makelist([pp[2][i], pp[3][i]], i, 1, length(pp[2])), lambda([pt_tau], second(pt_tau) # 0))), pending)),
+  consts: apply(append, map(lambda([pt_tau], [pt_tau[1][2], pt_tau[1][3], pt_tau[2]]), places)),
+  if some(lambda([z], not pm_constantp(z)), consts) then return(false),
+  E: ell_ops(q, g),
+  tr_realise(terms) := block([S: false, mu],
+    for tm in terms do for j thru abs(tm[2]) do S: ell_add(E, S, if tm[2] > 0 then tm[1] else [tm[1][1], canon(-tm[1][2])]),
+    mu: if S = false then 1 else torsion_order(q, g, S, E, bound),
+    if mu = false then false else [mu, second(ell_sum(q, g, Y, map(lambda([tm], [tm[1], mu*tm[2]]), terms), E))]),
+  for pt_tau in places do (
+    P: ell_to_m(E, [pt_tau[1][2], pt_tau[1][3]]),
+    got: tr_realise([[P, 1]]),
+    if got = false then rest_: endcons([pt_tau[1], P, pt_tau[2]], rest_)
+    else (
+      out: endcons([canon(pt_tau[2]/got[1]), got[2]], out),
+      if verbose then printf(true, "      torsion: [P - oo] of order ~a at (~a, ~a); Miller logand with coefficient ~a~%",
+                             got[1], string(pt_tau[1][2]), string(pt_tau[1][3]), string(canon(pt_tau[2]/got[1]))))),
+  if rest_ # [] then (
+    F: field_for(alg_atoms(map(third, rest_))),
+    for bn in qbasis_divisors(F, map(third, rest_)) do (
+      terms: sublist(makelist([rest_[i][2], bn[2][i]], i, 1, length(rest_)), lambda([tm], tm[2] # 0)),
+      got: tr_realise(terms),
+      if got = false then return(false),
+      out: endcons([canon(bn[1]/got[1]), got[2]], out),
+      if verbose then (
+        dv: pm_join(map(lambda([i], sconcat(bn[2][i], "*(", string(rest_[i][1][2]), ", ", string(rest_[i][1][3]), ")")),
+                        sublist(makelist(i, i, 1, length(rest_)), lambda([i], bn[2][i] # 0))), " + "),
+        printf(true, "      torsion: the divisor ~a - (~a) oo has order ~a; logand with coefficient ~a~%",
+               dv, apply("+", bn[2]), got[1], string(canon(bn[1]/got[1])))))),
+  out)$
+
+/* nontorsion_divisor(T, pending, verbose): Proposition 9.4 for the residue divisor that
+   Algorithm 3(a)-(d) leaves unrealised (pending = [[p, pts, taus], ...] on y^2 = q with
+   constant coordinates): each component over a Q-basis of the residues is reduced
+   modulo good primes and the orders of its class in the Jacobians compared.  Returns
+   [data, divisor] for the first component certified non-torsion, else false. */
+nontorsion_divisor(T, pending, verbose) := block([g, q: T@q, places, consts, F, mu, pl, cert, dv, res: false],
+  g: pending[1][2][1][1],
+  if not free_of_all(sublist(T@gens, lambda([z], z # g)), q) or some(lambda([pp], pp[2][1][1] # g), pending) then return(false),
+  places: apply(append, map(lambda([pp], sublist(makelist([pp[2][i], pp[3][i]], i, 1, length(pp[2])), lambda([pt_tau], second(pt_tau) # 0))), pending)),
+  consts: apply(append, map(lambda([pt_tau], [pt_tau[1][2], pt_tau[1][3], pt_tau[2]]), places)),
+  if some(lambda([z], not pm_constantp(z)), consts) or not const_coeffs_p(q, g, T@gens) then return(false),
+  F: field_for(alg_atoms(consts)),
+  mu: field_minpoly_list(F),
+  for bn in qbasis_divisors(F, map(second, places)) while res = false do (
+    pl: sublist(makelist([[qcoords(F, places[i][1][2]), qcoords(F, places[i][1][3])], bn[2][i]], i, 1, length(places)), lambda([z], second(z) # 0)),
+    cert: nontorsion_divisor_certificate(q, g, pl, mu, 2, 1000, 2*10^7),
+    if cert[1] then (
+      dv: pm_join(map(lambda([i], sconcat(bn[2][i], "*(", string(places[i][1][2]), ", ", string(places[i][1][3]), ")")),
+                      sublist(makelist(i, i, 1, length(places)), lambda([i], bn[2][i] # 0))), " + "),
+      if verbose then printf(true, "  the residue divisor ~a (coefficient ~a) is certified non-torsion by reduction mod p: ~a~%", dv, string(bn[1]), string(cert[2])),
+      res: [cert[2], dv])),
+  res)$
+
+/* ---------------------------------------------------------------- residues in the residue field */
+
+/* the generator g with p in K[g] (coefficients free of every generator) and, when there
+   is a curve, q in K[g] as well; false otherwise */
+const_dir(T, p) := block([res: false, found: false],
+  for g in T@gens while not found do
+    if poly_degree(p, g) >= 1 and const_coeffs_p(p, g, T@gens) then (
+      found: true,
+      res: if T@q = false or free_of_all(sublist(T@gens, lambda([z], z # g)), T@q) then g else false),
+  res)$
+
+/* a generator g in which p has positive degree, for the residue-field computation:
+   a constant-coefficient direction if there is one; for a transcendental tower
+   (q = false) any direction with deg_g(p) >= 1 */
+residue_dir(T, p) := block([g: const_dir(T, p)],
+  if g # false then return(g),
+  if T@q = false then for gg in T@gens while g = false do if poly_degree(p, gg) >= 1 then g: gg,
+  g)$
+
+/* the monic polynomial */
+monic(p, g) := expand(p/poly_lc(p, g))$
+
+/* the inverse of a modulo the polynomial p in g (coefficients may carry other
+   generators and algebraic constants); false when a is not invertible */
+inv_mod_poly(a, p, g) := block([ge, u],
+  ge: errcatch(gcdex(expand(a), p, g)),
+  if ge = [] then return(false),
+  ge: first(ge), u: ge[3],
+  if canon(u) = 0 or poly_degree(u, g) > 0 then return(false),
+  expand(remainder(expand(ge[1]/u), p, g)))$
+
+/* mod_p(expr, p, g): a rational function of g whose denominator is coprime to p,
+   reduced modulo p: a polynomial in g of degree < deg p.  false if the denominator is
+   not invertible. */
+mod_p(expr, p, g) := block([nd: num_den(canon(expr)), N, D, Dinv],
+  N: remainder(expand(nd[1]), p, g), D: remainder(expand(nd[2]), p, g),
+  Dinv: inv_mod_poly(D, p, g),
+  if Dinv = false then false else expand(remainder(expand(N*Dinv), p, g)))$
+
+/* canonical_residue_field(T, f, p, g, delta, verbose): Algorithm 2 at a normal prime P
+   over the irreducible p of a transcendental tower (q = false; f = f[1] a scalar),
+   computed in the residue field kappa(P) = Frac(F[gens]/(p)) by reduction modulo p in
+   the direction g, with NO substitution of a root.  Runs the local Hermite reduction
+   until the pole reaches order delta, then returns tau = (f p / Dp)|_P, or false when
+   a denominator met on the way is not coprime to p. */
+canonical_residue_field(T, f, p, g, delta, verbose) := block([gens: T@gens, fc, Dp, lam, k, mu, c, res: 'none],
+  fc: canon(f[1]),
+  Dp: tower_D(T, tower_scalar(T, p))[1],
+  lam: mod_p(canon(p^(delta - 1)*Dp), p, g),
+  if lam = false or iszero(lam) then return(false),
+  for it thru 16 while res = 'none do (
+    k: -vp(fc, p, gens) - delta,
+    if k < 0 then res: 0
+    else if k = 0 then res: mod_p(canon(fc*p/Dp), p, g)
+    else (
+      mu: mod_p(canon(p^(k + delta)*fc), p, g),
+      if mu = false then res: false
+      else (
+        c: mod_p(canon(-mu/(k*lam)), p, g),
+        if c = false then res: false
+        else (
+          fc: canon(fc - tower_D(T, tower_scalar(T, canon(c/p^k)))[1]),
+          if verbose then printf(true, "      Hermite step at (~a): order ~a -> subtract D((~a) * (~a)^(-~a))~%",
+                                 string(p), k + delta, string(c), string(p), k))))),
+  if res = 'none then false else res)$
+
+/* polynomials in Y with coefficients in Kc[g]/(pc): lists low degree first */
+polyY_strip(A, pc, g) := block([B: map(lambda([a], remainder(expand(a), pc, g)), A)],
+  while B # [] and last(B) = 0 do B: rest(B, -1),
+  B)$
+
+/* A mod B; throws 'notinvertible when the leading coefficient of B is a zero divisor */
+polyY_rem(A, B, pc, g) := block([inv, cf, sh],
+  A: polyY_strip(A, pc, g), B: polyY_strip(B, pc, g),
+  inv: inv_mod_poly(last(B), pc, g),
+  if inv = false then throw('notinvertible),
+  while length(A) >= length(B) do (
+    cf: remainder(expand(last(A)*inv), pc, g),
+    sh: length(A) - length(B),
+    for i thru length(B) do A[sh + i]: remainder(expand(A[sh + i] - cf*B[i]), pc, g),
+    A: polyY_strip(A, pc, g)),
+  A)$
+
+/* the irreducible factors over the field of the constants of p as [[factor, mult], ...]
+   in the original atoms (Trager's norm over the primitive element) */
+factor_over_field(p, g) := block([cs, F, pK, fl],
+  cs: coeffs_in([g], [p]),
+  F: field_for(alg_atoms(cs)),
+  if F@degree = 1 then return(factor_terms(p, [g])),
+  nf_on(F), pK: kconv(F, p), nf_off(F),
+  fl: nf_factor(pK, g, F),
+  map(lambda([fm], [expand(kback(F, fm[1])), fm[2]]), fl))$
+
+/* sheets_over(T, g, pc, taus, c): the sheets over the prime pc on which the residue
+   tau(y) = sum_i taus[i] w_i takes the value c: the gcd G(Y) of Y^m - q and c - tau(Y)
+   over the residue ring Kc[g]/(pc).  Returns a list of [pc_j, sheet] with sheet the
+   sheet polynomial Y0 (deg G = 1), 'all (deg G = m) or false (1 < deg G < m).  A zero
+   divisor met in the Euclidean algorithm means pc is reducible: it is factored and the
+   sheets are computed over each factor. */
+sheets_over(T, g, pc, taus, c) := block([m: T@m, A, B, G, r, facs, degG, Y0, inv],
+  r: catch(
+    A: append([expand(-T@q)], makelist(0, i, 1, m - 1), [1]),
+    B: makelist(block([inv: inv_mod_poly((T@E)[i + 1], pc, g)],
+      if inv = false then throw('notinvertible),
+      remainder(expand(-taus[i + 1]*inv), pc, g)), i, 0, m - 1),
+    B[1]: remainder(expand(B[1] + c), pc, g),
+    A: polyY_strip(A, pc, g), B: polyY_strip(B, pc, g),
+    while B # [] do ([A, B]: [B, polyY_rem(A, B, pc, g)]),
+    'done),
+  if r = 'notinvertible then (
+    facs: sublist(map(first, factor_over_field(pc, g)), lambda([fc], poly_degree(fc, g) >= 1)),
+    if length(facs) <= 1 then return([[pc, false]]),
+    return(apply(append, map(lambda([fc], sheets_over(T, g, monic(fc, g), taus, c)), facs)))),
+  G: A,
+  degG: length(G) - 1,
+  if degG = 1 then (
+    inv: inv_mod_poly(G[2], pc, g),
+    Y0: remainder(expand(-G[1]*inv), pc, g),
+    return([[pc, Y0]])),
+  if degG = m then return([[pc, 'all]]),
+  [[pc, false]])$
+
+/* residue_classes(T, p, tp, Y, verbose): residues at the places over a prime p of ANY
+   degree, computed in the residue field K[g]/(p) instead of at explicit roots (the
+   residue-polynomial step of Rothstein and Trager inside Algorithm 2).  Returns
+   [g, classes, principal] with classes = [[c, p_c, Y0], ...] and principal =
+   [[c, p_c2], ...]; a status list; or false when p has no usable direction. */
+residue_classes(T, p, tp, Y, verbose) := block([g, q: T@q, m: T@m, others, ncomp, taus, tau0, tau1, z: gensym("z"), charp: false, R, t1q, M, facs, vals_: [], rd, classes: [], principal: [], pc, E, t1, p2, Y0, pcP, ret: false],
+  g: residue_dir(T, p),
+  if g = false then return(false),
+  others: sublist(T@gens, lambda([z_], z_ # g)),
+  ncomp: if q # false then T@n else 1,
+  taus: makelist(mod_p(tp[i], p, g), i, 1, ncomp),
+  if some(lambda([t], t = false), taus) then return(["failed", "residue not reducible modulo the prime", p]),
+  if not every(lambda([t], free_of_all(others, t)), taus) then
+    /* the residue depends on another generator: it is not a constant */
+    return(["not elementary", p, tower_to_Y(T, append(taus, makelist(0, i, 1, T@n - ncomp)), Y)]),
+  tau0: taus[1],
+  tau1: if q # false and m = 2 then taus[2] else 0,
+  if q = false then R: resultant(p, expand(z - tau0), g)
+  else if m = 2 then (
+    t1q: mod_p(expand(tau1^2*q), p, g),
+    R: resultant(p, expand((z - tau0)^2 - t1q), g))
+  else (
+    /* N(z - tau): the characteristic polynomial of multiplication by tau */
+    M: radbasis_matrix(T@basis, taus),
+    charp: expand(determinant(z*ident(m) - M)),
+    charp: sum(mod_p(ratcoef(charp, z, k), p, g)*z^k, k, 0, m),
+    R: resultant(p, charp, g)),
+  R: expand(R),
+  if R = 0 or freeof(z, R) then return(["failed", "degenerate residue polynomial", p, R]),
+  facs: factor_over_field(R, z),
+  if verbose then printf(true, "      residue polynomial over (~a): ~a~%", string(p),
+    pm_join(map(lambda([fm], sconcat("(", string(subst('z, z, factor(fm[1]))), ")^", fm[2])), facs), " * ")),
+  for fm in facs while ret = false do block([F: fm[1]],
+    if poly_degree(F, z) >= 1 then (
+      rd: poly_roots(F, z),
+      if rd = false then ret: ["failed", "residue values not expressible in radicals", p, subst('z, z, F)]
+      else for c in rd do (
+        if pm_constantp(c) then c: kernel_normal(rectform(c)),
+        if not iszero(c) and not some(lambda([c2], iszero(c - c2)), vals_) then vals_: endcons(c, vals_)))),
+  if ret # false then return(ret),
+  for c in vals_ while ret = false do (
+    if q = false then (
+      pc: gcd(p, expand(tau0 - c), g),
+      if poly_degree(pc, g) >= 1 then principal: endcons([c, monic(pc, g)], principal))
+    else if m >= 3 then (
+      pcP: gcd(p, expand(subst(c, z, charp)), g),
+      if poly_degree(pcP, g) >= 1 then (
+        pcP: monic(pcP, g),
+        for ps in sheets_over(T, g, pcP, taus, c) do
+          if ps[2] = false then ret: ["failed", "residue class on several sheets over one root (m >= 3)", p, c]
+          else if ps[2] = 'all then principal: endcons([c, ps[1]], principal)
+          else classes: endcons([c, ps[1], expand(ps[2])], classes)))
+    else (
+      E: expand(tau1^2*q - (c - tau0)^2),
+      pc: gcd(p, E, g),
+      if poly_degree(pc, g) >= 1 then (
+        pc: monic(pc, g),
+        t1: remainder(tau1, pc, g),
+        p2: gcd(pc, t1, g),
+        if poly_degree(p2, g) >= 1 then (
+          p2: monic(p2, g),
+          principal: endcons([c, p2], principal),
+          pc: quotient(pc, p2, g)),
+        if poly_degree(pc, g) >= 1 then (
+          Y0: remainder(expand((c - tau0)*inv_mod_poly(remainder(t1, pc, g), pc, g)), pc, g),
+          if canon(remainder(expand(Y0^2 - q), pc, g)) # 0 then error("residue_classes: the sheet is not a square root"),
+          classes: endcons([c, pc, expand(Y0)], classes))))),
+  if ret # false then return(ret),
+  if verbose then (
+    for cl in classes do printf(true, "      residue class ~a: places over ~a on the sheet y = ~a~%", string(cl[1]), string(cl[2]), string(cl[3])),
+    for cp in principal do printf(true, "      residue ~a on ~a sheets over ~a: log(~a)~%", string(cp[1]), if m = 2 then "both" else "all", string(cp[2]), string(cp[2]))),
+  [g, classes, principal])$
+
+/* the kernels of the constant e all belong to the field of the constants consts */
+pm_in_field(e, consts) := block([ks: pm_kernels(kernel_normal(e)), ks2],
+  ks2: unique(apply(append, map(lambda([c], pm_kernels(kernel_normal(c))), consts))),
+  every(lambda([k], member(k, ks2)), ks))$
+
+/* the first vector of the nullspace of a matrix over the constants (algebraic mode),
+   as a list; false when the nullspace is trivial */
+pm_nullvector(rows) := block([M: apply(matrix, rows), ns, v],
+  ns: nullspace(ratsimp(M)),
+  if ns = span() or length(args(ns)) = 0 then return(false),
+  v: first(args(ns)),
+  makelist(canon(v[i, 1]), i, 1, length(v)))$
+
+/* realise_class(T, g, supp, c, mmax, verbose): realisation of the residue class c
+   supported on the places over the primes p_i of supp = [[p_i, Y0_i], ...], sheet
+   y = Y0_i(g): the logand u = a + b y with div(u) = m D_c - n_+ oo_+ - n_- oo_- for the
+   least m <= mmax for which one exists, by linear algebra over K(c): Y0_i is lifted by
+   Hensel's iteration to Y_i with Y_i^2 = q mod p_i^m, and 'u vanishes to order >= m
+   along D_c' is the linear condition a + b Y_i = 0 mod p_i^m; the pole orders
+   (n_+, n_-) at the two places at infinity (deg q even) are fixed in turn.  Returns
+   [c/m, [a, b]] or false. */
+realise_class(T, g, supp, c, mmax, verbose) := block([q: T@q, dq, lc, consts, half: 1/2, sqrt_lc, deg_supp, lifts, mods, res: false, n, h1, configs, Na, Nb, infd, basis, rows, dM, cols, r, cs, nplus, nminus, eps, nsmall, w, Sw, s, e, row, j, k, vec, a, b, N, Mall, qr, M, Yk],
+  dq: poly_degree(q, g),
+  lc: poly_lc(q, g),
+  consts: append([c, lc], apply(append, map(lambda([pY], append(poly_coeffs(pY[1], g), poly_coeffs(pY[2], g))), supp)), poly_coeffs(q, g)),
+  sqrt_lc: if pm_in_field(sqrt(lc), consts) then kernel_normal(sqrt(lc)) else false,
+  deg_supp: apply("+", map(lambda([pY], poly_degree(pY[1], g)), supp)),
+  lifts: map(lambda([pY], [expand(pY[1]), expand(pY[2])]), supp),
+  for m thru mmax while res = false do (
+    mods: [],
+    for PY in lifts do (
+      M: PY[1], Yk: PY[2],
+      for k thru m - 1 do (
+        M: expand(M*PY[1]),
+        Yk: remainder(expand((Yk + q*inv_mod_poly(Yk, M, g))*half), M, g)),
+      mods: endcons([M, Yk], mods)),
+    lifts: makelist([lifts[i][1], mods[i][2]], i, 1, length(lifts)),   /* keep the lifted sheet for the next m */
+    n: m*deg_supp,
+    if oddp(dq) then configs: [[floor(n/2), floor((n - dq)/2), false]]
+    else (
+      h1: dq/2,
+      configs: [],
+      for nplus: 0 thru n do (
+        nminus: n - nplus, Na: max(nplus, nminus),
+        if Na - h1 >= 0 and (nplus = nminus or sqrt_lc # false) then configs: endcons([Na, Na - h1, [nplus, nminus]], configs))),
+    for cfg in configs while res = false do (
+      Na: cfg[1], Nb: cfg[2], infd: cfg[3],
+      if Nb >= 0 then (
+        basis: append(makelist([g^j, false], j, 0, Na), makelist([g^j, 'y], j, 0, Nb)),
+        rows: [],
+        for MY in mods do (
+          M: MY[1], Yk: MY[2], dM: poly_degree(M, g),
+          cols: makelist(block([r: remainder(expand(if second(B) = false then first(B) else first(B)*Yk), M, g)],
+            cs: makelist(ratcoef(r, g, t), t, 0, dM - 1), cs), B, basis),
+          for t thru dM do rows: endcons(makelist(cols[jj][t], jj, 1, length(basis)), rows)),
+        if infd # false and infd[1] # infd[2] then (
+          nplus: infd[1], nminus: infd[2],
+          eps: if nplus < nminus then 1 else -1,
+          nsmall: min(nplus, nminus),
+          /* y = eps sqrt(lc) g^h1 S(1/g), S(w) = sqrt(q(1/w) w^(2 h1) / lc) */
+          w: gensym("w"),
+          Sw: taytorat(taylor(sqrt(expand(subst(1/w, g, q)*w^(2*h1)/lc)), w, 0, Na - nsmall)),
+          s: makelist(canon(ratcoef(Sw, w, k)), k, 0, Na - nsmall),
+          for e: Na thru nsmall + 1 step -1 do (
+            row: [],
+            for B in basis do (
+              j: poly_degree(first(B), g),
+              if second(B) = false then row: endcons(if j = e then 1 else 0, row)
+              else (k: j + h1 - e, row: endcons(if k >= 0 and k < length(s) then canon(eps*sqrt_lc*s[k + 1]) else 0, row))),
+            rows: endcons(row, rows))),
+        if rows # [] then (
+          vec: pm_nullvector(rows),
+          if vec # false then (
+            a: expand(canon(sum(vec[j + 1]*g^j, j, 0, Na))),
+            b: expand(canon(sum(vec[Na + 1 + j + 1]*g^j, j, 0, Nb))),
+            /* certificate: N(u) is a constant times prod p_i^m (no other zero) */
+            N: expand(a^2 - q*b^2),
+            Mall: expand(apply("*", map(first, mods))),
+            qr: divide(N, Mall, g),
+            if canon(N) # 0 and canon(qr[2]) = 0 and poly_degree(qr[1], g) <= 0 then (
+              if verbose then printf(true, "      residue class ~a: div(u) = ~a D_c - ~a oo; u = ~a + (~a)*y, N(u) = ~a * (~a)^~a; coefficient ~a~%",
+                string(c), m, if infd # false then sconcat("(", infd[1], ", ", infd[2], ")") else string(n), string(a), string(b), string(canon(qr[1])),
+                pm_join(map(lambda([pY], string(pY[1])), supp), " * "), m, string(canon(c/m))),
+              res: [canon(c/m), [a, b]])))))),
+  res)$
+
+/* infinity_data(T, g, lmax): the places over g = oo of y^m = q(g), deg q = d, lc(q) = c,
+   for the curve variable g: s = gcd(m, d) places oo_j, each of ramification index
+   e = m/s, with local parameter t, g = t^-e and y = zeta^j c^(1/m) t^-d' S(t^e),
+   S(u) = (q(1/u) u^d / c)^(1/m), so that g^k w_i = zeta^(ij) c^(i/m) t^-v(k,i) F_i(t^e),
+   F_i = S^i / Et_i.  Returns the record [s, e, d', degE, F, zk, ck] read by inf_v and
+   inf_coef. */
+infinity_data(T, g, lmax) := block([q: T@q, m: T@m, d, lc, s, e, dp, u: gensym("u"), qt, S, F: [], degE: [], Spow: 1, Ei, dE, Et, Fi],
+  d: poly_degree(q, g), lc: poly_lc(q, g),
+  s: gcd(m, d), e: m/s, dp: d/s,
+  qt: expand(expand(subst(1/u, g, q)*u^d)/lc),
+  S: expand(ratdisrep(taylor(qt^(1/m), u, 0, lmax))),
+  for i: 0 thru m - 1 do (
+    Ei: (T@E)[i + 1],
+    dE: if Ei # 1 then poly_degree(Ei, g) else 0,
+    Et: expand(u^dE*subst(1/u, g, Ei)),
+    Fi: expand(ratdisrep(taylor(Spow/Et, u, 0, lmax))),
+    F: endcons(makelist(canon(ratcoef(Fi, u, l)), l, 0, lmax), F),
+    degE: endcons(dE, degE),
+    Spow: expand(ratdisrep(taylor(Spow*S, u, 0, lmax)))),
+  [s, e, dp, degE, F, zeta_m(m), mroot(lc, m), lmax])$
+inf_v(infd, k, i) := infd[2]*k + i*infd[3] - infd[2]*infd[4][i + 1]$
+inf_coef(infd, j, k, i, r) := block([e: infd[2], l, rr],
+  l: floor((r + inf_v(infd, k, i))/e), rr: mod(r + inf_v(infd, k, i), e),
+  if rr # 0 or l < 0 or l > infd[8] then 0 else canon(infd[6]^(i*j)*infd[7]^i*infd[5][i + 1][l + 1]))$
+
+/* find_element(T, g, affine, zorders, infd): an element u = sum_i a_i(g) w_i of the
+   integral closure with u = 0 modulo (M, sheet) for every affine condition [M, Bs] and
+   v_{oo_j}(u) >= zorders[j] at the s places at infinity, by linear algebra over Kc.
+   Returns the coordinate list or false. */
+find_element(T, g, affine, zorders, infd) := block([m: T@m, s: infd[1], e: infd[2], degE: infd[4], Dmax, kmax, basis: [], rows: [], dM, cols, r, cs, vec, a],
+  Dmax: lmax(cons(0, map(lambda([z], -z), zorders))),
+  kmax: floor(Dmax/e) + lmax(degE) + 1,
+  for i: 0 thru m - 1 do for k: 0 thru kmax do if inf_v(infd, k, i) <= Dmax then basis: endcons([k, i], basis),
+  if basis = [] then return(false),
+  for MB in affine do (
+    dM: poly_degree(MB[1], g),
+    cols: makelist(block([r: remainder(expand(g^(ki[1])*MB[2][ki[2] + 1]), MB[1], g)],
+      makelist(ratcoef(r, g, t), t, 0, dM - 1)), ki, basis),
+    for t thru dM do rows: endcons(makelist(cols[jj][t], jj, 1, length(basis)), rows)),
+  for j: 0 thru s - 1 do for r: -Dmax thru zorders[j + 1] - 1 do
+    rows: endcons(map(lambda([ki], inf_coef(infd, j, ki[1], ki[2], r)), basis), rows),
+  if rows = [] then return(false),
+  vec: pm_nullvector(rows),
+  if vec = false then return(false),
+  a: makelist(0, i, 1, m),
+  for idx thru length(basis) do a[basis[idx][2] + 1]: a[basis[idx][2] + 1] + vec[idx]*g^(basis[idx][1]),
+  map(lambda([ai], expand(canon(ai))), a))$
+
+/* integer lists ordered by [max, lexicographic] */
+pm_cfg_less(a, b) := block([ma: lmax(a), mb: lmax(b)],
+  if ma # mb then ma < mb else pm_lex_less(a, b))$
+pm_lex_less(a, b) := block([res: 'eq],
+  for i thru length(a) while res = 'eq do if a[i] < b[i] then res: true else if a[i] > b[i] then res: false,
+  is(res = true))$
+
+/* realise_class_general(T, g, supp, c, mmax, verbose): realisation of the residue class
+   c for m >= 3: supp = [[p_i, Y0_i], ...]; the logand u with div(u) = N D_c - sum_j n_j oo_j
+   is sought for N = 1..mmax and every distribution (n_j) of the N deg(D_c) poles over
+   the s places at infinity, with the sheets lifted to Y_i^m = q mod p_i^N (Newton).
+   Returns [c/N, u] or false. */
+realise_class_general(T, g, supp, c, mmax, verbose) := block([q: T@q, m: T@m, d, deg_supp, s, e, lifts, infd: false, inf_l: -1, res: false, affine, n, lmax_, u, Nu, Mall, qr, M2, Yk, Bs],
+  d: poly_degree(q, g),
+  deg_supp: apply("+", map(lambda([pY], poly_degree(pY[1], g)), supp)),
+  s: gcd(m, d), e: m/s,
+  lifts: map(lambda([pY], [expand(pY[1]), expand(pY[1]), remainder(expand(pY[2]), expand(pY[1]), g)]), supp),   /* [p_i, p_i^N, Y_i] */
+  for N thru mmax while res = false do (
+    if N > 1 then lifts: map(lambda([PMY], block([Pc: PMY[1], M: PMY[2], Yk: PMY[3], M2],
+      M2: expand(M*Pc),
+      Yk: remainder(expand(Yk - (Yk^m - q)*inv_mod_poly(expand(m*Yk^(m - 1)), M2, g)), M2, g),
+      [Pc, M2, Yk])), lifts),
+    affine: map(lambda([PMY], [PMY[2], makelist(remainder(expand(PMY[3]^i*inv_mod_poly((T@E)[i + 1], PMY[2], g)), PMY[2], g), i, 0, m - 1)]), lifts),
+    n: N*deg_supp,
+    lmax_: floor(2*n/e) + 2,
+    if infd = false or lmax_ > inf_l then (infd: infinity_data(T, g, lmax_), inf_l: lmax_),
+    for cfg in sort(compositions(n, s), 'pm_cfg_less) while res = false do (
+      u: find_element(T, g, affine, map(lambda([nj], -nj), cfg), infd),
+      if u # false then (
+        Nu: expand(tower_norm(T, u)),
+        Mall: expand(apply("*", map(second, lifts))),
+        qr: divide(Nu, Mall, g),
+        if canon(Nu) # 0 and canon(qr[2]) = 0 and poly_degree(qr[1], g) <= 0 then (
+          if verbose then printf(true, "      residue class ~a: div(u) = ~a D_c - ~a oo; u = ~a, N(u) = ~a * (~a)^~a; coefficient ~a~%",
+            string(c), N, string(cfg), string(tower_to_Y(T, u, 'y)), string(canon(qr[1])), pm_join(map(lambda([pY], string(pY[1])), supp), " * "), N, string(canon(c/N))),
+          res: [canon(c/N), u])))),
+  res)$
+
+realise_class_any(T, g, supp, c, mmax, verbose) := if T@m = 2 then realise_class(T, g, supp, c, mmax, verbose)
+  else realise_class_general(T, g, supp, c, mmax, verbose)$
+
+/* is the integer vector z a Z-combination of the basis vectors with coefficients of
+   absolute value <= bound? */
+in_lattice(z, basis, bound) := block([res: false],
+  if basis = [] then return(false),
+  il_walk(cs) := if length(cs) = length(basis) then
+      (if every(lambda([j], sum(cs[i]*basis[i][j], i, 1, length(basis)) = z[j]), makelist(j, j, 1, length(z))) then res: true)
+    else for c: -bound thru bound while not res do il_walk(endcons(c, cs)),
+  il_walk([]),
+  res)$
+
+/* units_general(T, g, B, verbose): unit candidates of O for m >= 3: the units are the
+   elements whose divisor sum_j z_j oo_j is supported at the s = gcd(m, deg q) places at
+   infinity; every such divisor of degree <= B is tried by find_element (a bounded
+   height search).  B = false for the default.  Returns the list of unit lists found. */
+units_general(T, g, B, verbose) := block([q: T@q, m: T@m, d, s, e, infd, found: [], z, u, Nu],
+  d: poly_degree(q, g),
+  s: gcd(m, d),
+  if s = 1 then return([]),
+  e: m/s,
+  if B = false then B: if s <= 3 then 4 else 3,
+  infd: infinity_data(T, g, floor(2*B/e) + 2),
+  for deg thru B do for pos in compositions(deg, s) do for neg in compositions(deg, s) do
+    if not some(lambda([j], pos[j] # 0 and neg[j] # 0), makelist(j, j, 1, s)) then (
+      z: makelist(pos[j] - neg[j], j, 1, s),
+      if not in_lattice(z, map(first, found), deg) then (
+        u: find_element(T, g, [], z, infd),
+        if u # false then (
+          Nu: expand(tower_norm(T, u)),
+          if canon(Nu) # 0 and poly_degree(Nu, g) = 0 then (
+            found: endcons([z, u], found),
+            if verbose then printf(true, "  unit candidate (m = ~a): ~a with divisor ~a on the ~a places at infinity, N(u) = ~a~%",
+                                   m, string(tower_to_Y(T, u, 'y)), string(z), s, string(canon(Nu))))))),
+  map(second, found))$
+
+/* m >= 3, explicit places with constant coordinates over p: the residue classes are the
+   distinct nonzero values c, each supported on the places (rho, y0) with residue c,
+   realised by realise_class_general.  Returns [[coeff, u], ...] or false. */
+realise_at_points(T, p, pts, taus, verbose) := block([g: pts[1][1], groups: [], out: [], got, supp, placed],
+  if some(lambda([pt], not pm_constantp(pt[2]) or not pm_constantp(pt[3])), pts) then return(false),
+  for i thru length(pts) do if not iszero(taus[i]) then (
+    placed: false,
+    for k thru length(groups) while not placed do
+      if iszero(groups[k][1] - taus[i]) then (groups[k][2]: endcons(pts[i], groups[k][2]), placed: true),
+    if not placed then groups: endcons([taus[i], [pts[i]]], groups)),
+  for grp in groups do (
+    supp: map(lambda([pt], [expand(g - pt[2]), pt[3]]), grp[2]),
+    got: realise_class_general(T, g, supp, grp[1], 12, verbose),
+    if got = false then return(false),
+    out: endcons(got, out)),
+  out)$
+
+/* ---------------------------------------------------------------- the linear system */
+
+/* pmsystem: the linear system of the ansatz over the field of the constants: eqs (one
+   linear equation per monomial), the unknowns, css/alphas/denv to reconstruct the
+   rational part, and the solution xs (an association list unknown -> value). */
+defstruct(pmsystem(eqs, unks, css, alphas, denv, xs))$
+
+/* assemble_field(T, rem, denv, cols, css, alphas, unks): the linear system of the ansatz:
+   the columns of the monomials m/D_v and m y/D_v by polynomial arithmetic in K[gens]
+   over the one denominator Lfix = D_v^2 Dden 2q (m <= 2; the tower derivation on the
+   Trager basis for m >= 3), the unit and special columns D u / u once each, all brought
+   over a common denominator per coordinate, the equations read off monomial by
+   monomial. */
+assemble_field(T, rem, denv, cols, css, alphas, unks) := block(
+  [gens: T@gens, q: T@q, m: T@m, nc: length(css), gd, Qh, Qh_fr: false, rem_fr, mono_cols: [], dens_g: [], Dden: 1, Dg0s, Dg1s, qR, Qs0, Qs1, Lfix, ddenv, parts_by, monos, cg, n0, n1, s0, s1, eqs: [], distinct, L, quo, poly, mono, col],
+  gd: map(lambda([d], [num_den(canon(d[1])), num_den(canon(d[2]))]), T@derivs),
+  if q # false then (
+    Qh: tower_Dhat(T, q),                                     /* D q = Qh0 + Qh1 y */
+    Qh_fr: [num_den(canon(Qh[1])), num_den(canon(Qh[2]))]),
+  rem_fr: makelist(num_den(canon(rem[i])), i, 1, nc),
+  if m >= 3 then
+    /* D(mono w_i / D_v) by the tower derivation, unknown-free, one cancelled list per
+       basis element of the ansatz */
+    for i thru nc do for ai thru length(alphas) do (
+      mono: apply("*", makelist(gens[k]^(alphas[ai][k]), k, 1, length(gens))),
+      col: tower_D(T, pscale(mono/denv, tower_unit(T, i - 1))),
+      for j thru nc do mono_cols: endcons([css[i][ai], j, num_den(canon(col[j]))], mono_cols)),
+  /* Dden: the lcm of the denominators of the D g */
+  for d in gd do for dd in [d[1][2], d[2][2]] do if not member(dd, dens_g) then dens_g: endcons(dd, dens_g),
+  for dd in dens_g do Dden: lcm(Dden, dd),
+  Dden: expand(Dden),
+  Dg0s: map(lambda([d], expand(canon(d[1][1]*Dden/d[1][2]))), gd),
+  Dg1s: map(lambda([d], expand(canon(d[2][1]*Dden/d[2][2]))), gd),
+  denv: expand(denv),
+  if q # false then (
+    qR: expand(q),
+    Qs0: expand(canon(Qh_fr[1][1]*Dden/Qh_fr[1][2])),
+    Qs1: expand(canon(Qh_fr[2][1]*Dden/Qh_fr[2][2])),
+    Lfix: expand(denv^2*Dden*qR*2))
+  else Lfix: expand(denv^2*Dden),
+  ddenv: map(lambda([g], expand(diff(denv, g))), gens),
+  parts_by: makelist([], i, 1, nc),                          /* per coordinate: [unknown, [num, den]] */
+  if m <= 2 then (
+    /* D(m/D_v) = sum_g (dm/dg D_v - m dD_v/dg) D g / D_v^2 over the one denominator Lfix */
+    monos: map(lambda([alpha], apply("*", makelist(gens[k]^(alpha[k]), k, 1, length(gens)))), alphas),
+    for ai thru length(alphas) do block([monoR: monos[ai], c0: css[1][ai]],
+      cg: makelist(expand(diff(monoR, gens[k])*denv - monoR*ddenv[k]), k, 1, length(gens)),
+      n0: expand(sum(cg[k]*Dg0s[k], k, 1, length(gens))),
+      n1: expand(sum(cg[k]*Dg1s[k], k, 1, length(gens))),
+      if q # false then (n0: expand(n0*qR*2), n1: expand(n1*qR*2)),
+      parts_by[1]: endcons([c0, [n0, Lfix]], parts_by[1]),
+      if nc > 1 then parts_by[2]: endcons([c0, [n1, Lfix]], parts_by[2])),
+    if q # false then for ai thru length(alphas) do block([monoR: monos[ai], c1: css[2][ai]],
+      cg: makelist(expand(diff(monoR, gens[k])*denv - monoR*ddenv[k]), k, 1, length(gens)),
+      s0: expand(sum(cg[k]*Dg0s[k], k, 1, length(gens))),
+      s1: expand(sum(cg[k]*Dg1s[k], k, 1, length(gens))),
+      /* D(m y/D_v) = c.(Dg0 + Dg1 y) y + (m/D_v)(Dy0 + Dy1 y),  y^2 = q */
+      n0: expand(s1*qR*qR*2 + monoR*denv*Qs1*qR),
+      n1: expand(s0*qR*2 + monoR*denv*Qs0),
+      parts_by[1]: endcons([c1, [n0, Lfix]], parts_by[1]),
+      parts_by[2]: endcons([c1, [n1, Lfix]], parts_by[2])))
+  else for mc in mono_cols do parts_by[mc[2]]: endcons([mc[1], mc[3]], parts_by[mc[2]]),
+  for sc in cols do for i thru nc do parts_by[i]: endcons([sc[1], sc[2][2][i]], parts_by[i]),
+  /* the equations: per coordinate, every column times the quotient of the common
+     denominator by its own, read off monomial by monomial */
+  for i thru nc do block([parts: parts_by[i], rn: rem_fr[i][1], rd: rem_fr[i][2], acc, key, lin, rows: []],
+    distinct: [],
+    for pr in append(parts, [[false, [rn, rd]]]) do if not some(lambda([d2], canon(pr[2][2] - d2) = 0), distinct) then distinct: endcons(pr[2][2], distinct),
+    L: 1,
+    for dd in distinct do L: lcm(L, dd),
+    L: expand(L),
+    quo: map(lambda([dd], expand(canon(L/dd))), distinct),
+    af_quo(dd) := block([res: false], for k thru length(distinct) while res = false do if canon(dd - distinct[k]) = 0 then res: quo[k], res),
+    for pr in parts do if canon(pr[2][1]) # 0 then (
+      poly: rat(pr[2][1]*af_quo(pr[2][2])),
+      for mcf in monomial_rules(poly, gens) do (
+        key: mcf[1],
+        acc: assoc(key, rows, false),
+        rows: if acc = false then cons([key, mcf[2]*pr[1]], rows)
+              else subst([key, acc + mcf[2]*pr[1]], [key, acc], rows))),
+    poly: rat(rn*af_quo(rd)),
+    for mcf in monomial_rules(poly, gens) do (
+      key: mcf[1],
+      acc: assoc(key, rows, false),
+      rows: if acc = false then cons([key, -mcf[2]], rows)
+            else subst([key, acc - mcf[2]], [key, acc], rows)),
+    for kr in rows do eqs: endcons(second(kr) = 0, eqs)),
+  new(pmsystem(eqs, unks, css, alphas, denv, false)))$
+
+/* field_system_solve(S): the particular solution with the non-pivot unknowns 0 -- the
+   solution linsolve returns once its free parameters are set to 0 -- as an association
+   list, or false when the system is inconsistent.  The solution is verified on the
+   equations, exactly. */
+field_system_solve(S) := block([sol, zero_rules, xs, ok],
+  sol: errcatch(linsolve(S@eqs, S@unks)),
+  if sol = [] then return(false),                              /* inconsistent equations */
+  sol: first(sol),
+  if sol = [] and S@eqs # [] and some(lambda([e], canon(lhs(e)) # 0), S@eqs) then return(false),
+  zero_rules: map(lambda([u], u = 0), S@unks),
+  xs: map(lambda([u], block([e: sublist(sol, lambda([s], lhs(s) = u))],
+    [u, if e = [] then 0 else canon(subst(zero_rules, rhs(first(e))))])), S@unks),
+  ok: every(lambda([e], algzero(subst(map(lambda([uv], uv[1] = uv[2]), xs), lhs(e)))), S@eqs),
+  if not ok then error("internal: solution does not verify"),
+  S@xs: xs,
+  xs)$
+
+/* (sum_alpha c_alpha mono_alpha) / D_v per coordinate, cancelled in K[gens] */
+system_rational_part(S, gens) := block([monos],
+  monos: map(lambda([alpha], apply("*", makelist(gens[k]^(alpha[k]), k, 1, length(gens)))), S@alphas),
+  makelist(canon(sum(assoc(S@css[i][j], S@xs)*monos[j], j, 1, length(monos))/S@denv), i, 1, length(S@css)))$
+
+/* solve_stage(A, split, retry, bounds, verbose): Steps 15--20 of Algorithm 4 for one
+   rung of the ladder: the special exponents and degree bounds (Algorithm 6, the guesses
+   raised by the retry count), the ansatz, the linear system (Algorithm 5) and the
+   integral.  Returns the integral, or ['nosol, bounds, proved] when the system has no
+   solution. */
+solve_stage(A, split, retry, bounds, verbose) := block(
+  [T: A@T, f: A@f, Y: A@Y, gens, q, m, nc, det_logs, denv, units, rem, sp_, unk_logs, special_units, proved: false, exps, pb, prefixes, css, alphas, monos, gammas, betas, unks, ncoef, cols, S, t0, sub, rat_, y, I_, F, r_, TK, remK, colsK],
+  gens: T@gens, q: T@q, m: T@m,
+  nc: if q # false then T@n else 1,
+  det_logs: A@det_logs, denv: A@denv, units: A@units, rem: A@rem,
+  sp_: analysis_specials(A, split), unk_logs: sp_[1], special_units: sp_[2],
+  if bounds = false then (pb: place_bounds(A, unk_logs, retry, verbose), bounds: pb[1], exps: pb[2], proved: pb[3])
+  else exps: map(lambda([pl], [pl[1], max(0, -vP(rem, pl[1], T, T@q # false and vp(T@q, pl[1], gens) > 0)) + retry]), unk_logs),
+  for pe in exps do denv: denv*pe[1]^pe[2],
+  prefixes: if nc <= 2 then ["a_", "b_"] else makelist(sconcat("c", i - 1, "_"), i, 1, nc),
+  alphas: pm_boxes(bounds),
+  monos: map(lambda([alpha], apply("*", makelist(gens[k]^(alpha[k]), k, 1, length(gens)))), alphas),
+  css: makelist(map(lambda([alpha], concat(prefixes[i], pm_join(map(string, alpha), "_"))), alphas), i, 1, nc),
+  units: append(units, map(lambda([uu], [uu, false]), special_units)),
+  gammas: makelist(concat('gamma_, i - 1), i, 1, length(units)),
+  betas: makelist(concat('beta_, i - 1), i, 1, length(unk_logs)),
+  unks: append(apply(append, css), gammas, betas),
+  ncoef: apply("+", map(length, css)),
+  cols: append(makelist([gammas[i], analysis_column(A, 'u, units[i][1])], i, 1, length(units)),
+               makelist([betas[i], analysis_column(A, 's, unk_logs[i][1])], i, 1, length(unk_logs))),
+  /* the system over ONE number field when the constants have dependent kernels: every
+     piece converted into polynomials in theta, assembled and solved under
+     tellrat(minpoly), the solution converted back (the _KConv route of the Python) */
+  F: field_for(alg_atoms(coeffs_in(gens, apply(append, map(lambda([e], num_den(canon(e))),
+        append(apply(append, T@derivs), if q # false then [q] else [], rem, [denv],
+               apply(append, map(lambda([sc], apply(append, sc[2][2])), cols)))))))),
+  if nf_needs_field(F@atoms) then (
+    if verbose then printf(true, "  constants in the number field Q(theta), degree ~a: ~a~%", F@degree, string(F@thetaval)),
+    nf_on(F),
+    r_: errcatch(
+      TK: tower(gens, map(lambda([d], map(lambda([c], kconv(F, c)), d)), T@derivs), if q # false then kconv(F, q) else false, m),
+      remK: map(lambda([c], kconv(F, c)), rem),
+      colsK: map(lambda([sc], [sc[1], [false, map(lambda([nd], map(lambda([c], kconv(F, c)), nd)), sc[2][2])]]), cols),
+      S: assemble_field(TK, remK, kconv(F, denv), colsK, css, alphas, unks),
+      if verbose then printf(true, "  ansatz: bounds ~a, ~a unknowns (~a coefficients, ~a unit/S'-unit logs, ~a special logs), ~a equations~%",
+                             string(bounds), length(unks), ncoef, length(gammas), length(betas), length(S@eqs)),
+      t0: elapsed_real_time(),
+      sub: field_system_solve(S),
+      if verbose then printf(true, "  linsolve: ~,1fs, ~a~%", elapsed_real_time() - t0, if sub = false then "no solution" else "solved"),
+      if sub # false then (rat_: map(lambda([c], kback(F, c)), system_rational_part(S, gens)), sub: map(lambda([uv], [uv[1], kback(F, uv[2])]), sub))),
+    nf_off(F),
+    if r_ = [] then error("solve_stage: the field route failed:", error))
+  else (
+    S: assemble_field(T, rem, denv, cols, css, alphas, unks),
+    if verbose then printf(true, "  ansatz: bounds ~a, ~a unknowns (~a coefficients, ~a unit/S'-unit logs, ~a special logs), ~a equations~%",
+                           string(bounds), length(unks), ncoef, length(gammas), length(betas), length(S@eqs)),
+    t0: elapsed_real_time(),
+    sub: field_system_solve(S),
+    if verbose then printf(true, "  linsolve: ~,1fs, ~a~%", elapsed_real_time() - t0, if sub = false then "no solution" else "solved"),
+    if sub # false then rat_: system_rational_part(S, gens)),
+  if sub = false then return(['nosol, bounds, proved]),
+  y: if q # false then q^(1/m) else false,
+  ss_surf(u) := if q = false then u[1] else sum(u[i + 1]*y^i/(T@E)[i + 1], i, 0, T@n - 1),
+  I_: ss_surf(rat_)
+      + apply("+", cons(0, map(lambda([tu], tu[1]*log(ss_surf(tu[2]))), det_logs)))
+      + apply("+", cons(0, makelist(assoc(gammas[i], sub)*log(ss_surf(units[i][1])), i, 1, length(units))))
+      + apply("+", cons(0, makelist(assoc(betas[i], sub)*log(unk_logs[i][1]), i, 1, length(unk_logs)))),
+  I_)$
+
+/* every exponent list alpha with 0 <= alpha_k <= bounds_k (itertools.product) */
+pm_boxes(bounds) := if bounds = [] then [[]]
+  else apply(append, makelist(map(lambda([r], cons(a0, r)), pm_boxes(rest(bounds))), a0, 0, first(bounds)))$
+
+/* verified_residue_free(rem, T, extension): re-run the residue computation of Steps 7--13
+   on the residual: it is verified residue-free when the analysis finds nothing left to
+   realise AND every deeper-than-critical pole at a normal prime is one the analysis
+   evaluates. */
+verified_residue_free(rem, T, extension) := block([A2, gens: T@gens, q: T@q, nc, den: 1, ok: true, c, branch, et, delta, special],
+  A2: errcatch(analyse(rem, T, extension, false)),
+  if A2 = [] then return(false),
+  A2: first(A2),
+  if listp(A2) or A2@det_logs # [] then return(false),
+  nc: if q # false then T@n else 1,
+  for i thru nc do if rem[i] # 0 then den: lcm(den, second(num_den(canon(rem[i])))),
+  for fp in factor_terms(den, gens) while ok do block([p: fp[1]],
+    if not free_of_all(gens, p) then (
+      c: classify(T, p), branch: c[1], et: c[2], delta: c[3], special: c[4],
+      if not (special or vP(rem, p, T, branch) >= -delta) then (
+        if q = false then (if residue_dir(T, p) = false then ok: false)
+        else if branch or delta # 1 or points_over(T, p) = false then ok: false))),
+  ok)$
+
+/* pim(f, T, bounds, extension, verbose, split_specials, special_exp, model_changed,
+   allow_split, analysis): f = [f_0, ..., f_{m-1}] <-> sum_i f_i w_i (a pair f0 + f1 y for
+   m <= 2).  Returns an expression, or a status list.  The analysis (Steps 1--14) is
+   computed once per integrand and tower and cached on the tower; the rungs of the retry
+   ladder re-enter at Step 15. */
+pim(f, T, bounds, extension, verbose, split_specials, special_exp, model_changed, allow_split, analysis) := block(
+  [A: analysis, key, cached, gens, q, m, bounds_given: bounds, r, proved, Y, rem, units_complete, unk_logs, splittable, curve, typeE, ok],
+  if A = false then (
+    key: cache_key([f, extension]),
+    cached: assoc(key, T@analyses),
+    if cached # false then A: cached
+    else (
+      A: analyse(f, T, extension, verbose),
+      if listp(A) then return(A),
+      T@analyses: cons([key, A], T@analyses))),
+  gens: T@gens, q: T@q, m: T@m,
+  r: solve_stage(A, split_specials, special_exp, bounds, verbose),
+  if not (listp(r) and first(r) = 'nosol) then return(r),
+  bounds: r[2], proved: r[3],
+  f: A@f, Y: A@Y, rem: A@rem, units_complete: A@units_complete,
+  unk_logs: first(analysis_specials(A, split_specials)),
+  splittable: some(lambda([pl], some(lambda([g], poly_degree(pl[1], g) >= 2), gens)), unk_logs),
+  curve: sublist(gens, lambda([g], q # false and not freeof(g, q))),
+  typeE: some(lambda([pl], q # false and free_of_all(sublist(gens, lambda([g], not member(g, curve))), pl[1])), unk_logs),
+  if bounds_given = false and proved and units_complete and not typeE and not (splittable and allow_split) then (
+    /* Proposition 9.2(b): every bound in force is proved, the logand candidates are
+       complete, and the residual is VERIFIED residue-free: the inconsistent system shows
+       it to be a non-exact differential of the second kind (the holomorphic remainder) */
+    ok: if length(gens) = 1 and q # false and m = 2 and (T@derivs)[1] = [1, 0] then residue_free(T, rem, Y)
+        else verified_residue_free(rem, T, extension),
+    if ok then return(["not elementary", "holomorphic remainder: residual second-kind differential is not exact (every bound in force is proved)", bounds])),
+  if special_exp < 2 and bounds_given = false and not proved then
+    return(pim(f, T, false, extension, verbose, split_specials, special_exp + 1, model_changed, allow_split, A)),
+  if allow_split and not split_specials and splittable then
+    return(pim(f, T, bounds_given, extension, verbose, true, 0, model_changed, allow_split, A)),
+  ["failed", "no solution within bounds", bounds])$
+
+/* parallel_integrate_mixed(f, T, [opts]): the entry point of the pair form.  opts is a
+   list of equations among 'bounds = [...], 'extension = minpoly, 'verbose = true,
+   'split_specials = true, 'special_exp = n, 'model_changed = true, 'split_first = true.
+   Retry sequence (each a guessed input or a change of model): the base run with the
+   tower specials over Q (and the exponent retries inside pim); a conic radicand with a
+   rational point is parametrised away BEFORE any work over the algebraic closure;
+   specials split over Fbar; a quartic radicand is moved to its cubic model. */
+parallel_integrate_mixed(f, T, [opts]) := block(
+  [bounds, extension, verbose, split_specials, special_exp, model_changed, split_first, g0, d0, r0, gq, const_q, is_conic, is_quartic, r, res, T2, f2, back, r2],
+  opts: if opts = [] then [] else first(opts),
+  bounds: assoc('bounds, opts, false), extension: assoc('extension, opts, false),
+  verbose: assoc('verbose, opts, false), split_specials: assoc('split_specials, opts, false),
+  special_exp: assoc('special_exp, opts, 0), model_changed: assoc('model_changed, opts, false),
+  split_first: assoc('split_first, opts, false),
+  /* a single generator g over the curve with Dg = r(g) != 1 -- a flattened root or the
+     parameter of a parametrised conic -- is rescaled to d/dg (Lemma 3.4) */
+  if length(T@gens) = 1 and T@q # false then (
+    g0: (T@gens)[1], d0: (T@derivs)[1], r0: d0[1],
+    if r0 # 1 and every(lambda([c], c = 0), rest(d0)) and freeof(g0, r0) = false and pm_symbols(r0) = [g0] or
+       (r0 # 1 and every(lambda([c], c = 0), rest(d0)) and pm_symbols(r0) = []) then (
+      if verbose then printf(true, "  single generator ~a with D~a = ~a: rescaled to d/d~a (Lemma 3.4)~%", string(g0), string(g0), string(r0), string(g0)),
+      T: tower([g0], [[1]], T@q, T@m),
+      f: map(lambda([c], canon(c/r0)), f))),
+  gq: sublist(T@gens, lambda([g], T@q # false and free_of_all(sublist(T@gens, lambda([z], z # g)), T@q))),
+  const_q: is(gq # [] and const_coeffs_p(T@q, first(gq), T@gens)),
+  is_conic: is(T@m = 2 and const_q and poly_degree(T@q, first(gq)) = 2),
+  is_quartic: is(T@m = 2 and const_q and poly_degree(T@q, first(gq)) = 4 and ratnump(sqrt(poly_lc(T@q, first(gq))))),
+  r: pim(f, T, bounds, extension, verbose, split_specials, special_exp, model_changed,
+         split_first or not (is_conic and not model_changed), false),
+  if not model_changed and pm_failed(r) and bounds = false then (
+    if is_conic then (
+      res: conic_to_line(T, f),
+      if res # false then (
+        T2: res[1], f2: res[2], back: res[3],
+        if verbose then printf(true, "  conic radicand: parametrised by ~a = ~a; the tower is now transcendental over Q(~a)~%",
+                               string(back[1][1]), string(back[1][2]), string(back[1][1])),
+        r2: parallel_integrate_mixed(f2, T2, ['extension = extension, 'verbose = verbose, 'model_changed = true]),
+        if not listp(r2) then return(pm_back_subst(r2, back)),
+        if first(r2) = "not elementary" then return(r2)),
+      /* no rational point, or the parametrised run failed: allow the split now */
+      r: pim(f, T, bounds, extension, verbose, split_specials, special_exp, model_changed, true, false)),
+    if pm_failed(r) and is_quartic then (
+      res: errcatch(quartic_to_cubic(T, f)),
+      if res = [] then return(r),
+      res: first(res), T2: res[1], f2: res[2], back: res[3],
+      if verbose then printf(true, "  quartic radicand: changing to the cubic model y^2 = ~a (s = ~a)~%", string(T2@q), string(back[2][2])),
+      r2: parallel_integrate_mixed(f2, T2, ['extension = extension, 'verbose = verbose, 'model_changed = true]),
+      if not listp(r2) then return(pm_back_subst(r2, back)),
+      return(if first(r2) = "not elementary" then r2 else r))),
+  r)$
+
+pm_failed(r) := is(listp(r) and member(first(r), ["failed", "needs torsion realisation (Parts I--II, milestone iii)"]))$
+
+/* apply the back rules [[old, new], ...] in order, as Python's subs on the list */
+pm_back_subst(e, back) := block([r: e], for on in back do r: subst(on[2], on[1], r), r)$
+
+/* ---------------------------------------------------------------- test helpers */
+
+/* the two lists of [coefficient, logand] agree as sets (tests: the order of the
+   determined logarithms follows the root order of the host) */
+pm_same_logs(L1, L2) := is(length(L1) = length(L2) and
+  every(lambda([tu], some(lambda([tv], iszero(tu[1] - tv[1]) and pequal(tu[2], tv[2])), L2)), L1))$
+/* the two lists of expressions agree as sets (canonical forms) */
+pm_same_set(L1, L2) := is(length(L1) = length(L2) and
+  every(lambda([a], some(lambda([b], is(canon(a - b) = 0)), L2)), L1))$

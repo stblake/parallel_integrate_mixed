@@ -1,0 +1,275 @@
+/* pell.mac -- the Maxima port of pell.py: polynomial Pell equations (units of
+   O = Q[x][y]/(y^2 - q) by the continued fraction of sqrt(q), Abel--Chebyshev) and
+   the two certificates by reduction modulo primes of good reduction: the unit degree
+   over GF(p) (continued fraction over GF(p)) and the order of a residue divisor in the
+   Jacobian over GF(p) (Cantor's algorithm, baby-step giant-step).
+
+   Polynomials over GF(p) are dense coefficient lists, highest degree first, with
+   coefficients in 0..p-1 (the galoistools convention of pell.py); the empty list is 0.
+   These gfp_* routines replace sympy's gf_* -- Maxima's gf_* builtins need a reduction
+   polynomial for gcdex/quotient, and the CRE route needs the global modulus with its
+   balanced representation (MAXIMA_DIVERGENCES.md). */
+
+/* ---------------------------------------------------------------- GF(p)[x] */
+/* Polynomials over GF(p) are Maxima polynomials in the symbol x -- the variable of the gf
+   package, always written 'x here because callers (integrate_surface(f, x), the
+   certificates' curve variable) may have x dynamically bound to another symbol -- whose compiled gf_add/gf_sub/gf_mult/gf_reduce/gf_gcd work in F_p[x] of
+   unbounded degree once gf_minimal_set(p) has set the characteristic (no reduction
+   polynomial) -- with coefficients in 0..p-1; the quotient and the extended gcd come
+   from the CRE routines under modulus:p (balanced coefficients, normalised back).  An
+   interpreted list implementation was 100 times slower (MAXIMA_DIVERGENCES.md). */
+gfp_p: false$
+/* ratvars() after gf_minimal_set: the gf package pushes its variable x onto Maxima's CRE
+   variable list a second time (varlist = [x, x] with two gensyms) when gf_minimal_set and
+   the first gf operation run inside one top-level form; CRE arithmetic on x then treats
+   the two entries as different variables and gcdex/divide return unsimplified zeros
+   ("`quotient' by `zero'").  Clearing the list (as the top level does between forms)
+   restores a single entry; existing CREs carry their own headers and are unaffected. */
+gfp_set(p) := if gfp_p # p then (gf_minimal_set(p), ratvars(), gfp_p: p)$
+gfp_norm(e, p) := (gfp_set(p), gf_add(expand(e), 0))$              /* coefficients reduced to 0..p-1 */
+gfp_poly(a, p) := gfp_norm(sum(a[i]*'x^(length(a) - i), i, 1, length(a)), p)$   /* list (highest first) -> polynomial */
+gfp_degree(a) := if a = 0 then -1 else hipow(a, 'x)$
+gfp_lc(a) := if a = 0 then 0 else coeff(a, 'x, hipow(a, 'x))$
+gfp_add(a, b, p) := (gfp_set(p), gf_add(a, b))$
+gfp_sub(a, b, p) := (gfp_set(p), gf_sub(a, b))$
+gfp_neg(a, p) := gfp_norm(-a, p)$
+gfp_mul(a, b, p) := (gfp_set(p), gf_mult(a, b))$
+gfp_rem(a, b, p) := (gfp_set(p), gf_reduce(a, b))$
+gfp_quo(a, b, p) := gfp_norm(block([modulus: p], quotient(a, b, 'x)), p)$
+gfp_divmod(a, b, p) := [gfp_quo(a, b, p), gfp_rem(a, b, p)]$
+gfp_gcd(a, b, p) := (gfp_set(p), gf_gcd(a, b))$
+/* extended Euclid: [s, t, g] with s a + t b = g, g monic */
+gfp_gcdex(a, b, p) := block([g: block([modulus: p], gcdex(a, b, 'x)), inv],
+  g: map(lambda([e], gfp_norm(e, p)), g),
+  if g[3] = 0 then return([0, 0, 0]),
+  inv: inv_mod(gfp_lc(g[3]), p),
+  map(lambda([e], gfp_norm(inv*e, p)), g))$
+/* [lc, monic a] */
+gfp_monic(a, p) := if a = 0 then [0, 0] else block([lc: gfp_lc(a)], [lc, gfp_norm(inv_mod(lc, p)*a, p)])$
+gfp_pow(a, n, p) := block([r: 1, b: a],
+  while n > 0 do (if oddp(n) then r: gfp_mul(r, b, p), b: gfp_mul(b, b, p), n: floor(n/2)),
+  r)$
+gfp_eval(a, x0, p) := mod(subst(x0, 'x, a), p)$
+/* a polynomial in var with rational coefficients as a GF(p) polynomial (in x) */
+gfp_from_poly(q, var, p) := gfp_poly(map(lambda([c], mod(num(c)*inv_mod(denom(c), p), p)), poly_coeffs(q, var)), p)$
+
+/* ---------------------------------------------------------------- units over Q */
+
+/* the polynomial part s of sqrt(q) at x = oo (deg q even, lc a square) */
+sqrt_polypart(q, x) := block([d: poly_degree(q, x), t: gensym("t"), qt, ser],
+  if oddp(d) then error("sqrt_polypart: odd degree"),
+  qt: expand(subst(1/t, x, q)*t^d),
+  ser: taytorat(taylor(sqrt(qt), t, 0, d/2)),
+  expand(expand(ser)*x^(d/2)), 
+  expand(subst(1/x, t, expand(ratdisrep(ser)))*x^(d/2)))$
+
+/* a unit A + B y of Q[x][y]/(y^2 - q), found from the continued fraction of sqrt(q):
+   [A, B, c] with A^2 - q B^2 = c in Q*, or false if no unit appears within maxsteps
+   partial quotients (a coefficient beyond 8000 bits is the non-torsion signature) */
+fundamental_unit(q, x, maxsteps) := block([s, P: 0, Q: 1, hm2: 0, hm1: 1, km2: 1, km1: 0, a, h, k, c, lc, res: false, bits],
+  s: sqrt_polypart(q, x),
+  for it thru maxsteps while res = false do (
+    a: quotient(expand(P + s), Q, x),
+    h: expand(a*hm1 + hm2),
+    k: expand(a*km1 + km2),
+    c: expand(h^2 - q*k^2),
+    if freeof(x, c) and c # 0 and k # 0 then (
+      lc: poly_lc(k, x),
+      res: [expand(h/lc), expand(k/lc), expand(c/lc^2)])
+    else (
+      P: expand(a*Q - P),
+      Q: canon((q - P^2)/Q),
+      bits: lmax(cons(0, map(lambda([co], pm_bits(num(co)) + pm_bits(denom(co))), poly_coeffs(Q, x)))),
+      if bits > 8000 then res: 'giveup,
+      [hm2, hm1, km2, km1]: [hm1, h, km1, k])),
+  if res = 'giveup then false else res)$
+pm_bits(n) := if n = 0 then 1 else 1 + floor(log(abs(n))/log(2) + 1.0e-9)$
+
+/* ---------------------------------------------------------------- mod p */
+
+/* polynomial part s of sqrt(q) in GF(p)[x]((1/x)), q of even degree with a square
+   leading coefficient mod p; false if no square root */
+polypart_sqrt_modp(q, var, p) := block([Q, d2, d, lc, r: false, coeffs, qc, inv2r, acc],
+  Q: map(lambda([c], mod(num(c)*inv_mod(denom(c), p), p)), poly_coeffs(q, var)),   /* highest first */
+  d2: length(Q) - 1,
+  if oddp(d2) then return(false),
+  d: d2/2,
+  lc: Q[1],
+  for rr: 0 thru p - 1 while r = false do if mod(rr*rr - lc, p) = 0 then r: rr,
+  if r = false then return(false),
+  coeffs: makelist(0, i, 0, d), coeffs[1]: r,          /* coeffs[k+1] = coefficient of x^(d-k) */
+  qc: makelist(Q[k + 1], k, 0, d2),                      /* qc[k+1] = coefficient of x^(d2-k) */
+  inv2r: inv_mod(mod(2*r, p), p),
+  for k thru d do (
+    acc: mod(sum(coeffs[i + 1]*coeffs[k - i + 1], i, 1, k - 1), p),
+    coeffs[k + 1]: mod((qc[k + 1] - acc)*inv2r, p)),
+  gfp_poly(coeffs, p))$
+
+/* the order of the class [oo+ - oo-] on the reduction of y^2 = q modulo a good prime p:
+   the degree of the fundamental unit of GF(p)[x][y], from the periodic continued
+   fraction of sqrt(q) over GF(p); false when oo+- are not rational mod p */
+unit_degree_modp(q, var, p, maxsteps) := block([s, Qp, P: 0, Q: 1, hm2: 0, hm1: 1, km2: 1, km1: 0, a, h, k, c, res: false],
+  s: polypart_sqrt_modp(q, var, p),
+  if s = false then return(false),
+  Qp: gfp_from_poly(q, var, p),
+  for it thru maxsteps while res = false do (
+    a: gfp_quo(gfp_add(P, s, p), Q, p),
+    h: gfp_add(gfp_mul(a, hm1, p), hm2, p),
+    k: gfp_add(gfp_mul(a, km1, p), km2, p),
+    c: gfp_sub(gfp_mul(h, h, p), gfp_mul(Qp, gfp_mul(k, k, p), p), p),
+    if gfp_degree(c) <= 0 and c # 0 and k # 0 then res: gfp_degree(h)
+    else (
+      P: gfp_sub(gfp_mul(a, Q, p), P, p),
+      Q: gfp_quo(gfp_sub(Qp, gfp_mul(P, P, p), p), Q, p),
+      [hm2, hm1, km2, km1]: [hm1, h, km1, k])),
+  res)$
+
+/* the primes dividing an integer (the keys of factorint) */
+pm_prime_set(n) := map(first, ifactors(abs(n)))$
+
+/* no finite N has N = N_p p^a for every [p, N_p] in data: for two primes
+   N_{p1}/N_{p2} = p2^b/p1^a, so in lowest terms the numerator must be a power of p2
+   (or 1) and the denominator a power of p1 (or 1) */
+incompatible(data) := block([res: false, r, p1, n1, p2, n2, ok_num, ok_den],
+  for i thru length(data) while res = false do for j: i + 1 thru length(data) while res = false do (
+    [p1, n1]: data[i], [p2, n2]: data[j],
+    r: n1/n2,
+    ok_num: is(num(r) = 1 or pm_prime_set(num(r)) = [p2]),
+    ok_den: is(denom(r) = 1 or pm_prime_set(denom(r)) = [p1]),
+    if not (ok_num and ok_den) then res: true),
+  res)$
+
+/* certify that [oo+ - oo-] is NOT torsion on y^2 = q (q in Q[x], even degree) by
+   reduction modulo primes of good reduction: [certified, [[p, N_p], ...]] */
+nontorsion_certificate(q, var, nprimes, pmax) := block([cc: poly_coeffs(q, var), lc, disc, bad, data: [], Np, p: 2],
+  lc: cc[1],
+  disc: poly_discriminant(q, var),
+  bad: 2*num(lc)*denom(lc),
+  for c in cc do bad: bad*denom(c),
+  bad: bad*(if num(disc) = 0 then 1 else num(disc)),
+  while length(data) < nprimes and p < pmax do (
+    p: next_prime(p),
+    if p < pmax and mod(bad, p) # 0 then (
+      Np: unit_degree_modp(q, var, p, 10000),
+      if Np # false then data: endcons([p, Np], data))),
+  [incompatible(data), data])$
+
+/* ---------------------------------------------------------------- Jacobian arithmetic mod p */
+/* Cantor's algorithm on y^2 = f, deg f = 2g + 1 (one place at infinity), over GF(p):
+   divisor classes as reduced Mumford pairs [u, v], u monic of degree <= g, v^2 = f mod u,
+   as GF(p) polynomials; the identity is [1, 0].  Used by nontorsion_divisor_certificate
+   (Proposition 9.4 for a residue divisor supported at finite places). */
+
+cantor_zero: [1, 0]$
+
+/* the reduced Mumford representative of the class of D1 + D2 */
+cantor_add(f, D1, D2, p) := block([u1: D1[1], v1: D1[2], u2: D2[1], v2: D2[2], e1, e2, d1, c1, c2, d, s1, s2, u, t, v, g],
+  [e1, e2, d1]: gfp_gcdex(u1, u2, p),                                    /* d1 = e1 u1 + e2 u2 */
+  [c1, c2, d]: gfp_gcdex(d1, gfp_add(v1, v2, p), p),                     /* d = c1 d1 + c2 (v1 + v2) */
+  s1: gfp_mul(c1, e1, p), s2: gfp_mul(c1, e2, p),
+  u: gfp_quo(gfp_mul(u1, u2, p), gfp_mul(d, d, p), p),
+  t: gfp_add(gfp_add(gfp_mul(gfp_mul(s1, u1, p), v2, p), gfp_mul(gfp_mul(s2, u2, p), v1, p), p),
+             gfp_mul(c2, gfp_add(gfp_mul(v1, v2, p), f, p), p), p),
+  v: gfp_rem(gfp_quo(t, d, p), u, p),
+  g: floor((gfp_degree(f) - 1)/2),
+  while gfp_degree(u) > g do (
+    u: second(gfp_monic(gfp_quo(gfp_sub(f, gfp_mul(v, v, p), p), u, p), p)),
+    v: gfp_rem(gfp_neg(v, p), u, p)),
+  [second(gfp_monic(u, p)), v])$
+
+/* [n] D by double-and-add, n >= 0 */
+cantor_mul(f, n, D, p) := block([R: cantor_zero, Q: D],
+  while n > 0 do (
+    if oddp(n) then R: cantor_add(f, R, Q, p),
+    Q: cantor_add(f, Q, Q, p),
+    n: floor(n/2)),
+  R)$
+
+/* the entry of the baby-step table, false when absent */
+bsgs_lookup(key) := block([v: baby[key]], if integerp(v) then v else false)$
+
+/* the order of the class of sum_P n_P (P - oo) in the Jacobian of y^2 = f over GF(p),
+   points = [[[x0, y0], n_P], ...] (f a GF(p) polynomial or a coefficient list, highest
+   first): the Mumford representative of the divisor by Cantor's algorithm, a multiple M
+   of the order by baby-step giant-step in the Weil interval, and the least divisor of M
+   annihilating the class; false if no multiple is found */
+divisor_order_modp(f, points, p) := block([D: cantor_zero, P, g, lo, hi, m, B, G, gstep, M: false, j, res: false, sp],
+  if listp(f) then f: gfp_poly(f, p),
+  for pn in points do (
+    P: [gfp_norm('x - pn[1][1], p), mod(if pn[2] > 0 then pn[1][2] else -pn[1][2], p)],
+    for i thru abs(pn[2]) do D: cantor_add(f, D, P, p)),
+  if D = cantor_zero then return(1),
+  g: floor((gfp_degree(f) - 1)/2),
+  sp: sqrt(p),
+  lo: max(1, floor(float((sp - 1)^(2*g)))),
+  hi: ceiling(float((sp + 1)^(2*g))),
+  m: isqrt(hi - lo) + 1,
+  B: cantor_zero,
+  for j: 0 thru m - 1 do (
+    if bsgs_lookup(B) = false then baby[B]: j,
+    B: cantor_add(f, B, D, p)),
+  G: cantor_mul(f, lo, D, p), gstep: cantor_mul(f, m, D, p),
+  for i: 0 thru m while M = false do (
+    j: bsgs_lookup(G),
+    if j # false and lo + i*m - j > 0 then M: lo + i*m - j,
+    if M = false then G: cantor_add(f, G, gstep, p)),
+  remarray(baby),
+  if M = false then return(false),
+  for d in listify(divisors(M)) while res = false do
+    if cantor_mul(f, d, D, p) = cantor_zero then res: d,
+  res)$
+
+/* for q (a GF(p) polynomial or a coefficient list, highest first) of even degree d with
+   a root r: the odd-degree model w^2 = f(v) of y^2 = q, f(v) = v^d q(r + 1/v) of degree
+   d - 1, and the point map [x0, y0] -> [1/(x0 - r), y0/(x0 - r)^(d/2)] (odd_model_pt) */
+odd_model(q, r, p) := block([d, f],
+  if listp(q) then q: gfp_poly(q, p),
+  d: gfp_degree(q),
+  f: gfp_norm(sum(coeff(q, 'x, i)*(r*'x + 1)^i*'x^(d - i), i, 0, d), p),
+  [f, d, r])$
+odd_model_pt(model, x0, y0, p) := block([d: model[2], r: model[3], s],
+  s: inv_mod(mod(x0 - r, p), p),
+  [s, mod(y0*power_mod(s, d/2, p), p)])$
+
+/* the residue mod p of a rational number */
+pm_red(c, p) := mod(num(c)*inv_mod(denom(c), p), p)$
+
+/* nontorsion_divisor_certificate(q, var, places, minpoly, nprimes, pmax, budget): certify
+   that the class of a degree-0 divisor sum n_P P on y^2 = q with places P = (x0, y0) of
+   constant coordinates is NOT torsion, by reduction modulo primes of good reduction
+   (Proposition 9.4).  places is [[[a, b], n], ...] with a, b the coordinates of x0, y0
+   over Q on the power basis of theta (lowest first) and minpoly the minimal polynomial
+   of theta as a coefficient list (highest first; false for K = Q).  Returns
+   [certified, [[p, N_p], ...]]. */
+nontorsion_divisor_certificate(q, var, places, minpoly, nprimes, pmax, budget) := block(
+  [d: poly_degree(q, var), two_g, qc, mu, bad: 2, data: [], p: 2, th, thetas, pts, f, roots, model, Np, ok, res: false, zz: gensym("z")],
+  two_g: if oddp(d) then d - 1 else d - 2,
+  qc: poly_coeffs(q, var),
+  mu: if minpoly = false then [1, 0] else minpoly,
+  for c in append(qc, mu, [poly_discriminant(q, var), poly_discriminant(sum(mu[i]*zz^(length(mu) - i), i, 1, length(mu)), zz)],
+                  apply(append, map(lambda([pl], append(pl[1][1], pl[1][2])), places))) do
+    bad: bad*(if num(c) = 0 then 1 else num(c))*denom(c),
+  while res = false and length(data) < nprimes and p < pmax do (
+    p: next_prime(p),
+    if p < pmax and mod(bad, p) # 0 and float((sqrt(p) + 1)^two_g) <= budget then (
+      thetas: sublist(makelist(t, t, 0, p - 1), lambda([t], gfp_eval(gfp_poly(map(lambda([c], pm_red(c, p)), mu), p), t, p) = 0)),
+      if thetas # [] then (
+        th: first(thetas),
+        pts: map(lambda([pl], [[pm_ev(pl[1][1], th, p), pm_ev(pl[1][2], th, p)], pl[2]]), places),
+        f: gfp_poly(map(lambda([c], pm_red(c, p)), qc), p),
+        ok: true,
+        if evenp(d) then (
+          roots: sublist(makelist(r, r, 0, p - 1), lambda([r], gfp_eval(f, r, p) = 0 and every(lambda([pt], pt[1][1] # r), pts))),
+          if roots = [] then ok: false
+          else (
+            model: odd_model(f, first(roots), p),
+            f: model[1],
+            pts: map(lambda([pt], [odd_model_pt(model, pt[1][1], pt[1][2], p), pt[2]]), pts))),
+        if ok and every(lambda([pt], mod(pt[1][2]^2 - gfp_eval(f, pt[1][1], p), p) = 0), pts) then (
+          Np: divisor_order_modp(f, pts, p),
+          if Np # false then (
+            data: endcons([p, Np], data),
+            if incompatible(data) then res: true))))),
+  [if res = false then false else true, data])$
+/* the value mod p of a Q-coordinate vector (lowest first) at theta = th */
+pm_ev(a, th, p) := mod(sum(pm_red(a[i], p)*power_mod(th, i - 1, p), i, 1, length(a)), p)$

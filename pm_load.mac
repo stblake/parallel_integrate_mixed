@@ -1,0 +1,26 @@
+/* pm_load.mac -- loader for the Maxima port of parallel_mixed.py.
+
+       load("pm_load.mac");        (from mixed/maxima, or with an absolute path)
+
+   Sets the global flags the port relies on, loads the share packages and the
+   three modules parallel_mixed.mac, pell.mac, build_tower.mac from the directory
+   of this file.  Idempotent: pm_loaded marks a loaded session. */
+if not member('pm_loaded, values) then (
+  pm_dir: pathname_directory(load_pathname),
+  load("ratpow"),                   /* ratp_coeffs, ratp_dense_coeffs, ratp_hipow */
+  load("functs"),                   /* lcm */
+  load("linearalgebra"),            /* nullspace */
+  algebraic: true,                  /* arithmetic in algebraic extensions (tellrat, radicals of integers, %i) */
+  gcd: subres,                      /* the default spmod gcd is wrong with algebraic kernels: gcd(u^4+1, u - (1+%i)/sqrt(2)) = 1/2 */
+  ratprint: false,
+  linsolvewarn: false,
+  linsolve_params: false,           /* no %r parameters: unsolved unknowns stay as themselves */
+  programmode: true,
+  listconstvars: true,              /* listofvars sees %i, %e, %pi */
+  algexact: true,                   /* algsys never returns floats */
+  display2d: false,
+  radexpand: false,                 /* sqrt(a b) and sqrt(a/b) stay one radical (radexpand:all splits them, radexpand:true gives abs); sqrt(g^2) -> g is done locally where the Python relies on positive symbols */
+  load(sconcat(pm_dir, "parallel_mixed.mac")),
+  if pm_have_file(sconcat(pm_dir, "pell.mac")) then load(sconcat(pm_dir, "pell.mac")),
+  if pm_have_file(sconcat(pm_dir, "build_tower.mac")) then load(sconcat(pm_dir, "build_tower.mac")),
+  pm_loaded: true)$
