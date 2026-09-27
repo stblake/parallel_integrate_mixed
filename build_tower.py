@@ -26,9 +26,19 @@ the generators and y:
 import sympy as sp
 from parallel_mixed import Tower, parallel_integrate_mixed, _pair_reduce, _c
 
-GEN_HEADS = (sp.log, sp.exp, sp.tan, sp.cot, sp.tanh, sp.coth,
+class pm_exp(sp.Function):
+    """exp(a) held unevaluated while the tower is built: SymPy rewrites exp(c log x) as x^c
+    for a positive x, which would undo the exponential generator of x^sqrt(2), x^a"""
+    nargs = 1
+
+    def _eval_evalf(self, prec):
+        return sp.exp(self.args[0])._eval_evalf(prec)
+
+
+GEN_HEADS = (sp.log, sp.exp, pm_exp, sp.tan, sp.cot, sp.tanh, sp.coth,
              sp.atan, sp.acot, sp.atanh, sp.acoth,
-             sp.asin, sp.acos, sp.asinh, sp.acosh, sp.asec, sp.acsc, sp.asech, sp.acsch)
+             sp.asin, sp.acos, sp.asinh, sp.acosh, sp.asec, sp.acsc, sp.asech, sp.acsch,
+             sp.LambertW)
 # inverse functions with a rational derivative:  D t = coef(a) D a
 INV_RATIONAL = {sp.atan: lambda a: 1 / (1 + a ** 2), sp.acot: lambda a: -1 / (1 + a ** 2),
                 sp.atanh: lambda a: 1 / (1 - a ** 2), sp.acoth: lambda a: 1 / (1 - a ** 2)}
@@ -192,8 +202,12 @@ def build_tower(integrand, x, verbose=False):
             except (TypeError, ValueError):
                 pass
 
+    taken = {s.name for s in expr.free_symbols}     # a symbol of the integrand (a parameter t1, u1, ...) is never reused
+
     def new_sym(prefix):
         counter[0] += 1
+        while f"{prefix}{counter[0]}" in taken:
+            counter[0] += 1
         return sp.Symbol(f"{prefix}{counter[0]}", positive=True)
 
     def rebuild_tower():
@@ -385,10 +399,14 @@ def build_tower(integrand, x, verbose=False):
         gens.append(tn); derivs.append(Dt)
         rebuild_tower()
 
-    # general powers a^b with a non-rational exponent are exp(b log a)
-    expr = expr.replace(lambda z: isinstance(z, sp.Pow) and not z.exp.is_Rational
-                        and not z.exp.free_symbols.isdisjoint({x}) and z.base != sp.E,
-                        lambda z: sp.exp(z.exp * sp.log(z.base)))
+    # general powers a^b with a non-rational exponent are exp(b log a): an exponent
+    # involving x (x^x, 2^x), or a base involving x with a non-rational constant
+    # exponent (x^sqrt(2), x^a)
+    expr = expr.xreplace({z: (sp.exp if x in z.exp.free_symbols else pm_exp)(z.exp * sp.log(z.base))
+                          for z in expr.atoms(sp.Pow)
+                          if not z.exp.is_Rational and z.base != sp.E
+                          and (not z.exp.free_symbols.isdisjoint({x})
+                               or (not z.base.free_symbols.isdisjoint({x}) and x not in z.exp.free_symbols))})
 
     # --- main loop
     while True:
@@ -527,7 +545,7 @@ def build_tower(integrand, x, verbose=False):
             Dt = T.mul(T.mul(Da, cp), (sp.S(0), 1 / q))       # 1/sqrt(q) = y/q (m = 2)
         elif head is None:                    # inverse function whose radical disappeared
             Dt = T.mul(Da, to_tuple(icoef / rcoef))
-        elif head is sp.exp:
+        elif head is sp.exp or head is pm_exp:
             Dt = tuple(_c(tn * d) for d in Da)
         elif head is sp.tan:
             Dt = tuple(_c((1 + tn ** 2) * d) for d in Da)
@@ -535,10 +553,12 @@ def build_tower(integrand, x, verbose=False):
             Dt = tuple(_c(-(1 + tn ** 2) * d) for d in Da)
         elif head in (sp.tanh, sp.coth):
             Dt = tuple(_c((1 - tn ** 2) * d) for d in Da)
+        elif head is sp.LambertW:                   # D W(a) = W Da / (a (1 + W))
+            Dt = tuple(_c(tn * d / (1 + tn)) for d in T.div(Da, ap))
         else:
             raise TowerError(f"unsupported generator {f0}")
         gens.append(tn); derivs.append(Dt)
-        back.append((tn, f0))
+        back.append((tn, f0.replace(pm_exp, sp.exp)))
         record(tn, f0.subs(Y, q ** sp.Rational(1, m)) if q is not None else f0)
         expr = expr.xreplace({f0: tn})
         rebuild_tower()
@@ -567,9 +587,35 @@ def _substitute_back(res, back):
     return res
 
 
+def _vanishing_denominator(fpair, back, x):
+    """a denominator of the pair that vanishes identically once the tower identifies
+    dependent generators (1/(asinh x - log(x + sqrt(x^2+1)))): zero at every rational
+    point where it evaluates; the surface form, or None"""
+    for c in fpair:
+        den = _substitute_back(sp.denom(sp.cancel(c)), back)
+        vals = []
+        for p in (sp.Rational(1, 2), 2, sp.Rational(1, 3), 3, sp.Rational(3, 2), sp.Rational(1, 5)):
+            try:
+                v = sp.N(den.subs(x, p), 30)
+                if v.is_number and v.free_symbols == set():
+                    vals.append(abs(complex(v)))
+            except (TypeError, ValueError, ZeroDivisionError):
+                pass
+        if len(vals) >= 2 and all(v < 1e-25 for v in vals):
+            return den
+    return None
+
+
 def integrate_surface(integrand, x, verbose=False, verify=False, **opts):
-    """The surface-form entry point: integrate an expression in x."""
-    T, fpair, back = build_tower(integrand, x, verbose=verbose)
+    """The surface-form entry point: integrate an expression in x.  A tower that cannot
+    be built is an honest ('failed', ...), never an exception."""
+    try:
+        T, fpair, back = build_tower(integrand, x, verbose=verbose)
+    except TowerError as e:
+        return ('failed', 'tower construction failed', str(e))
+    den = _vanishing_denominator(fpair, back, x)
+    if den is not None:
+        return ('failed', 'integrand undefined: a denominator vanishes identically (dependent generators)', den)
     res = parallel_integrate_mixed(fpair, T, verbose=verbose, **opts)
     if not isinstance(res, sp.Basic):
         return tuple(_substitute_back(r, back) if isinstance(r, sp.Basic) else r for r in res)

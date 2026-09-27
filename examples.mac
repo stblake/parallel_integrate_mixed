@@ -273,7 +273,7 @@ runS("S10 tan(x)/sqrt(1 + sec^3 x)  (odd in sin: u = cos x)", tan(x)/sqrt(sec(x)
 runS("S11 tan(x) sqrt(1 + tan^4 x)  (radical over the tangent)", sqrt(tan(x)^4 + 1)*tan(x))$
 runS("S12 sqrt(tan x)  (specials split over Fbar)", sqrt(tan(x)))$
 runS("S13 sqrt(log x): not elementary, honest 'failed'", sqrt(log(x)), 'expect = "failed")$
-runS("S14 exp(x^2): not elementary, honest 'failed'", exp(x^2), 'expect = "failed")$
+runS("S14 exp(x^2): not elementary  (K4 at x = oo: the hyperexponential shift is exact, bound proved, no solution)", exp(x^2), 'expect = "not elementary")$
 runS("S15 Bronstein (E) nested radical: not elementary", (sqrt(sqrt(log(x)) + log(x)) + log(x))/(log(x) + 1), 'expect = "not elementary")$
 runS("S16 sqrt(sin x)/(1 + sin^2 x)  (Charlwood A27: residues at the degree-8 prime in the residue field)", sqrt(sin(x))/(sin(x)^2 + 1))$
 runS("S17 sqrt(1 + sec x tan x)  (cubic model: the residue divisor is 2-torsion, its places are not)", sqrt(tan(x)*sec(x) + 1))$
@@ -289,7 +289,7 @@ runS("M3  1/(x (x^2-1)^(1/3))  (one place at infinity, 2-torsion classes)", 1/(x
 runS("M4  x^2 log(x)/(x^3+1)^(2/3) + (x^3+1)^(1/3)/x  (log above the cube root)", x^2*log(x)/(x^3 + 1)^(2/3) + (x^3 + 1)^(1/3)/x)$
 runS("M5  1/(x (x^4+1)^(1/4))  (m = 4, residue classes over Q(i))", 1/(x*(x^4 + 1)^(1/4)))$
 runS("M6  1/(x^4+1)^(1/4)  (m = 4, units at the four places at infinity)", (x^4 + 1)^(-1/4))$
-runS("M7  x/(x^3-1)^(1/3): not elementary, honest 'failed'", x/(x^3 - 1)^(1/3), 'expect = "failed")$
+runS("M7  x/(x^3-1)^(1/3): not elementary  (three places at infinity: exact valuations there, zero residues everywhere, holomorphic remainder)", x/(x^3 - 1)^(1/3), 'expect = "not elementary")$
 runS("N1  (x^2-1) sqrt(x^4-x^2+1)/((x^2+1)(x^4+1))  (norm search at k = 2 and k = 1)", (x^2 - 1)*sqrt(x^4 - x^2 + 1)/((x^2 + 1)*(x^4 + 1)))$
 runS("T1  1/(x sqrt(1-x^3))  (order-3 torsion, tutorial Example 6)", 1/(x*sqrt(1 - x^3)))$
 runS("S21w sin(x)/(1+cos(x))  (half-angle)", sin(x)/(cos(x) + 1))$

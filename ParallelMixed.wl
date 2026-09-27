@@ -20,16 +20,39 @@
    Stage 2 adds the norm search, vanishing orders, deep residues (n = 1),
    elliptic torsion (division polynomials, Miller functions) and the v_oo
    residue; stage 3 the units (continued fractions over Q and GF(p)), the
-   non-torsion certificate, and the holomorphic-remainder certificate with
-   the exact bounds of Part I.  Radicals of degree m >= 3 (y^m = q,
+   non-torsion certificates (Proposition 9.4: for the class at infinity by
+   the continued fraction over GF(p), for a residue divisor at finite
+   places by Cantor's algorithm in the Jacobian over GF(p), any genus), and
+   the holomorphic-remainder certificate, with
+   the special exponents and degree bounds of Algorithm 6 (Section 8.2:
+   proved where Proposition 8.11 applies, the classical guess elsewhere).  Radicals of degree m >= 3 (y^m = q,
    q m-th-power-free) are handled on the Trager basis w_i = y^i/E_i:
    residue classes with the m x m norm, realisation by Hensel lifting and
    linear algebra with the poles distributed over the places at infinity,
    unit candidates from a bounded divisor search at infinity (UnitsGeneral).
    Not covered for m >= 3: S'-units over special primes, residue classes on
    several but not all sheets over one root, partially ramified branch
-   primes, and the two m = 2 certificates (non-torsion, holomorphic
-   remainder).  The port is complete.
+   primes, and the non-torsion certificate.  The port is complete.
+
+   2026-09-27 (with the review corpus review_corpus.py / review_wl.py): the
+   holomorphic-remainder certificate in the second-kind variant (b') for any
+   m, with exact valuations and residues at the places over infinity
+   (InfExpansion, VInf, ResInfAll, SecondKindAtInfinityQ); (K4) at x = oo of
+   the base; the residues at critical poles over branch primes for m = 2
+   (Trager's rule on the transcendental copy of the tower); the completion
+   condition at infinity of the mod-p certificate (InfDivisorData); no
+   certificate over a coefficient field with transcendental constants
+   (TransConsts); conic radicands with algebraic pole primes parametrised
+   first, over a quadratic field when there is no rational point
+   (AlgebraicPoint); the held exponential PMExp (x^Sqrt[2], x^a, 2^x) and
+   ProductLog as generator heads; honest {"failed", ...} statuses from the
+   surface entry point (tower construction, a vanishing denominator).  The
+   logarithmic part over a prime of a transcendental tower whose places or
+   residues are Root objects is one RootSum (the Rothstein--Trager /
+   Lazard--Rioboo--Trager form; RootSumLogand, GroupRootLogs), and the
+   residual is reduced by the rational function the kernel evaluates over K:
+   the term-by-term arithmetic over the splitting field of a quartic prime
+   was intractable (R291, R323, the parametrised conics of the corpus).
 
    The function names are the Python names in CamelCase; the verbose trace
    lines are the same, so sessions can be compared between the two.          *)
@@ -56,12 +79,12 @@ CertifyNonconstant::usage = "CertifyNonconstant[tau, gens] decides exactly wheth
   Undecided -- the expression contains more than one algebraic function, or a non-square-root algebraic function, and no verdict is issued.
 The decision reduces tau to the canonical form (a + b Sqrt[A]) / D0 with a, b, D0 rational in the generators; tau is constant iff b = 0 and a/D0 is free of the generators. A constant-in-disguise must never be mistaken for an obstruction, so a syntactic free-variable test is not used.";
 
-ParallelIntegrateMixed::usage = "ParallelIntegrateMixed[integrand, x, opts] integrates an expression in x built from rational operations, one square root of a polynomial (the radical y^2 = q), pure roots that flatten (Lemma 3.2: a root whose base is linear in a generator with a constant coefficient, such as Sqrt[x], Sqrt[x + Log[x]], (x + Exp[x])^(1/3), Sqrt[Log[x]]), and logarithms, exponentials and tangents of expressions in the field generated so far. The tower is constructed automatically (BuildTower), the integral computed by the pair form below, and the result returned in terms of x. Option \"Verify\" -> True additionally checks D[result, x] against the integrand numerically at three points.
+ParallelIntegrateMixed::usage = "ParallelIntegrateMixed[integrand, x, opts] integrates an expression in x built from rational operations, one square root of a polynomial (the radical y^2 = q), pure roots that flatten (Lemma 3.2: a root whose base is linear in a generator with a constant coefficient, such as Sqrt[x], Sqrt[x + Log[x]], (x + Exp[x])^(1/3), Sqrt[Log[x]]), and logarithms, exponentials, general powers (x^Sqrt[2], x^a, 2^x as exponentials), tangents, inverse trigonometric and hyperbolic functions and ProductLog of expressions in the field generated so far; free symbols other than x are transcendental parameters, over which no non-elementarity certificate is issued. The tower is constructed automatically (BuildTower), the integral computed by the pair form below, and the result returned in terms of x; a tower that cannot be built gives {\"failed\", \"tower construction failed\", integrand}, and an integrand whose denominator vanishes identically once dependent generators are identified {\"failed\", \"integrand undefined: ...\", den}. Option \"Verify\" -> True additionally checks D[result, x] against the integrand numerically at three points.
 ParallelIntegrateMixed[{f0, f1}, T, opts] integrates f = f0 + f1 y over the tower T by the parallel (Risch-Norman) method of the paper (Algorithm 4), with y = Sqrt[q]. It returns one of
   an expression in the generators and Sqrt[q]   -- the integral, verified inside the routine by re-differentiation;
   {\"not elementary\", p, tau}                    -- certified: the residue tau at a normal prime over p is not a constant (Proposition 9.2(a));
-  {\"failed\", reason, ...}                       -- no verdict: the reason names the guessed input in play (in stage 1 also the mechanisms not yet ported: norm search, torsion, deep residues, units, the place at infinity, the holomorphic-remainder certificate).
-Options: \"SplitSpecials\" -> Automatic (default) retries a failed system with every special prime split into its linear factors over the algebraic closure, each with its own coefficient (needed e.g. for Sqrt[Tan[x]]); True always splits, False never; \"Bounds\" -> {b1, ..., bn} fixes the degree bounds of the numerator of the rational part in each generator (default: maximal degree occurring + 2); \"Verbose\" -> True prints the classification of every prime, the residues on every sheet, the candidate logands and the special primes, in the same format as the SymPy implementation so sessions can be compared.
+  {\"failed\", reason, ...}                       -- no verdict: the reason names the guessed input in play, or \"certificate withheld: transcendental constants in the coefficient field\" with the constants and the withheld certificate.
+Options: \"SplitSpecials\" -> Automatic (default) retries a failed system with every special prime split into its linear factors over the algebraic closure, each with its own coefficient (needed e.g. for Sqrt[Tan[x]]); True always splits, False never; \"Bounds\" -> {b1, ..., bn} fixes the degree bounds of the numerator of the rational part in each generator (default: Algorithm 6 of the paper -- proved by Proposition 8.11 where it applies, else the maximal degree occurring + 2, raised on retry); \"Verbose\" -> True prints the classification of every prime, the residues on every sheet, the candidate logands and the special primes, in the same format as the SymPy implementation so sessions can be compared.
 Steps (Algorithm 4): factor the denominator of f; for each prime, ClassifyPrime; specials become candidate logands and denominator factors; normal primes with a pole deeper than delta contribute Hermite factors to the denominator; normal primes with a pole of order exactly delta carry residues, computed on every sheet, certified constant or not, and realised as logands (equal residues -> the polynomial p; residues split by the curve -> the quadratic y-split; at a prime of degree > 4 the residues are computed in the residue field K[g]/(p) -- the residue polynomial of Rothstein and Trager -- and each residue class is realised from its sheet polynomial by Hensel lifting and linear algebra over K(c)); then the tower specials are added, the residual f - Sum c_i D u_i / u_i is formed, and the linear system for the rational part and the unknown logand coefficients is solved.";
 
 BuildTower::usage = "BuildTower[integrand, x] constructs the differential tower for a surface expression. Returns {T, {f0, f1}, back, Y}: the Tower T, the integrand as a pair f0 + f1 y on T, the list of back-substitution rules mapping the generator symbols (and flattened roots) to their surface expressions in x, and the symbol Y used for y during the conversion. Processing is innermost-first: Log[a] -> new generator t with D t = D a / a; Exp[a] -> t with D t = t D a; Tan[a] -> t with D t = (1 + t^2) D a; a root base^(k/m) whose base is c g + r with g a generator, c a constant and r free of g is flattened, g -> (u^m - r)/c, D u = D(base)/(m u^(m-1)); any other root base^(k/m) with polynomial base becomes the radical y^m = base (pairs on {1, y} for m = 2, m-tuples on the Trager basis for m >= 3). Fails with a message if two distinct unflattenable radicals occur or if a radicand is not an m-th-power-free polynomial.";
@@ -538,6 +561,20 @@ TorsionOrderAndMiller[q_, g_, pt_, Y_, bound_: 24] := Module[{toM, add, c, P, m}
    is its own coordinate.                                                   *)
 QCoords[consts_List] := PadRight[If[Head[#] === AlgebraicNumber, #[[2]], {#}] & /@ ToNumberField[consts]];
 
+(* QBasisDivisors[taus]
+   The residues taus (algebraic constants) over a Q-basis of their Q-span
+   (Algorithm 3(d)): {{beta_j, ns_j}, ...} with ns_j integer vectors and
+   tau_i = sum_j ns_j[[i]] beta_j, so that the divisor sum_i tau_i P_i is
+   sum_j beta_j D_j with D_j = sum_i ns_j[[i]] P_i; beta_j is the residue at
+   the j-th pivot divided by the common denominator of its row.  None if a
+   coordinate is not rational.                                              *)
+QBasisDivisors[taus_List] := Module[{A, Rr, piv, N0},
+  A = Transpose[QCoords[taus]];                            (* column i: the residue tau_i *)
+  If[! MatrixQ[A, MatchQ[#, _Integer | _Rational] &], Return[None]];
+  Rr = DeleteCases[RowReduce[A], {0 ..}];                  (* A[[All, i]] = sum_j Rr[[j, i]] A[[All, piv[[j]]]] *)
+  piv = FirstPosition[#, z_ /; z != 0][[1]] & /@ Rr;
+  Table[N0 = LCM @@ Denominator[Rr[[j]]]; {taus[[piv[[j]]]]/N0, N0 Rr[[j]]}, {j, Length[piv]}]];
+
 (* TorsionRealise[T, pending, Y, bound, verbose]
    Algorithm 3(d): the residue divisor of the pending primes {{p, pts,
    taus}, ...} on an elliptic curve with one place at infinity (deg q = 3,
@@ -552,7 +589,7 @@ QCoords[consts_List] := PadRight[If[Head[#] === AlgebraicNumber, #[[2]], {#}] & 
    list of {coefficient, pair} or None (a class of order > bound, no cubic
    model, or a place with non-constant coordinates).                        *)
 TorsionRealise[T_, pending_, Y_, bound_: 24, verbose_: False] := Catch[Module[
-  {gens = T["gens"], g, q = T["q"], places, toM, add, c, realise, out = {}, rest = {}, P, got, A, Rr, piv, N0, ns, terms, beta},
+  {gens = T["gens"], g, q = T["q"], places, toM, add, c, realise, out = {}, rest = {}, P, got, qb, ns, terms, beta},
   g = pending[[1, 2, 1, 1]];
   If[Exponent[q, g] =!= 3 || ! FreeQ[q, Alternatives @@ DeleteCases[gens, g]] || AnyTrue[pending, #[[2, 1, 1]] =!= g &], Throw[None, "tors"]];
   places = Cases[Flatten[Transpose[{#[[2]], #[[3]]}] & /@ pending, 1], {_, tau_} /; tau =!= 0];
@@ -570,21 +607,139 @@ TorsionRealise[T_, pending_, Y_, bound_: 24, verbose_: False] := Catch[Module[
       If[verbose, Print["      torsion: [P - oo] of order ", got[[1]], " at (", pl[[1, 2]], ", ", pl[[1, 3]], "); Miller logand with coefficient ", RR[pl[[2]]/got[[1]]]]]],
     {pl, places}];
   If[rest =!= {},
-    A = Transpose[QCoords[rest[[All, 3]]]];                 (* column i: the residue of rest[[i]] *)
-    If[! MatrixQ[A, MatchQ[#, _Integer | _Rational] &], Throw[None, "tors"]];
-    Rr = DeleteCases[RowReduce[A], {0 ..}];                 (* A[[All, i]] = sum_j Rr[[j, i]] A[[All, piv[[j]]]] *)
-    piv = FirstPosition[#, z_ /; z != 0][[1]] & /@ Rr;
-    Do[N0 = LCM @@ Denominator[Rr[[j]]];
-      ns = N0 Rr[[j]];
+    qb = QBasisDivisors[rest[[All, 3]]];
+    If[qb === None, Throw[None, "tors"]];
+    Do[{beta, ns} = bn;
       terms = Cases[Transpose[{rest[[All, 2]], ns}], {_, n_} /; n != 0];
       got = realise[terms];
       If[got === None, Throw[None, "tors"]];
-      beta = rest[[piv[[j]], 3]]/N0;
       AppendTo[out, {RR[beta/got[[1]]], got[[2]]}];
       If[verbose, Print["      torsion: the divisor ", StringRiffle[Cases[Transpose[{rest[[All, 1]], ns}], {pt_, n_} /; n != 0 :> ToString[n] <> "*(" <> ToString[pt[[2]], InputForm] <> ", " <> ToString[pt[[3]], InputForm] <> ")"], " + "],
         " - (", Total[ns], ") oo has order ", got[[1]], "; logand with coefficient ", RR[beta/got[[1]]]]],
-      {j, Length[piv]}]];
+      {bn, qb}]];
   out], "tors"];
+
+(* InfExpansion[T, u, g]
+   The expansion of the tuple u at the places over g = oo of y^m = q(g) in the local
+   parameter tau (g = tau^-e, e = m/gcd(m, d)) with the sheet symbol w (w^m = 1):
+   y = w tau^-dp c qsn^(1/m), qsn = q(tau^-e) tau^(d e)/lc a unit at 0 and c an m-th root
+   of lc; the s = gcd(m, d) places are the classes w = zeta_m^j, j < s, of the m sheets
+   under tau -> zeta_e tau.  Returns {expr, tau, w}.                                *)
+InfExpansion[T_, u0_, g_] := Module[{q = T["q"], m = T["m"], u = TPad[T, u0], d, s, e, dp, tau, w, qs, lc, qsn, ck},
+  d = Exponent[q, g]; s = GCD[m, d]; e = m/s; dp = d/s;
+  tau = Unique["tau"]; w = Unique["w"];
+  qs = Expand[(q /. g -> 1/tau^e) tau^(d e)]; lc = qs /. tau -> 0; qsn = Cancel[qs/lc]; ck = MRoot[lc, m];
+  {Sum[If[u[[i + 1]] === 0, 0, (u[[i + 1]] /. g -> 1/tau^e) w^i tau^(-i dp) ck^i qsn^(i/m)/(T["E"][[i + 1]] /. g -> 1/tau^e)], {i, 0, m - 1}], tau, w}];
+
+(* ResInf[T, f, g]
+   The residues of the differential f dg at the two places over g = oo of an even-degree
+   model y^2 = q(g) (gens = {g}, Dg = 1), as constants {r_+, r_-}: with u = 1/g,
+   y = +-Sqrt[q(1/u) u^d]/u^(d/2) on the two sheets (the sign convention of VInf) and
+   f dg = -f(1/u) du/u^2, the residue is minus the coefficient of u in the expansion of f(1/u). *)
+ResInf[T_, f_, g_] := Module[{q = T["q"], d, a, b, uu, qs, lc, expr},
+  d = Exponent[q, g]; {a, b} = TPad[T, f][[1 ;; 2]];
+  uu = Unique["u"];
+  qs = Expand[(q /. g -> 1/uu) uu^d]; lc = qs /. uu -> 0;
+  Table[expr = Together[(a /. g -> 1/uu) + sg Sqrt[lc] (b /. g -> 1/uu) Sqrt[Cancel[qs/lc]]/uu^(d/2)];
+    RRad[-Coefficient[Normal[Series[expr, {uu, 0, 2}]], uu, 1]], {sg, {1, -1}}]];
+
+(* ResInfAll[T, f, g]
+   The residues of f dg at the places over g = oo of y^m = q(g) (gens = {g}).  At a place
+   of ramification e, g = tau^-e and f dg = -e tau^(-e-1) f(tau) dtau, so the residue is
+   -e times the coefficient of tau^e in the expansion of f there (InfExpansion).  None
+   when the expansion is not available (several places and zeta_m not a radical). *)
+ResInfAll[T_, f_, g_] := Module[{q = T["q"], m = T["m"], d, s, e, ex, ser},
+  d = Exponent[q, g]; s = GCD[m, d]; e = m/s;
+  If[s > 1 && Mod[12, m] != 0, Return[None]];
+  ex = InfExpansion[T, f, g];
+  Table[ser = Normal[Series[Together[ex[[1]] /. ex[[3]] -> RRad[RootOfUnity[m]^j]], {ex[[2]], 0, e + 1}]];
+    RRad[-e Coefficient[ser, ex[[2]], e]], {j, 0, s - 1}]];
+
+(* SecondKindAtInfinityQ[T, rem]
+   The residual of a single-generator curve tower (D = d/dg) has zero residue at every
+   place over g = oo.  With zero residues at the finite places as well (ResidueFree /
+   VerifiedResidueFree), an elementary integral would have no logarithmic part at all
+   (its log coefficients would be the residues), so the ansatz for the algebraic part
+   with proved bounds decides: the unit group at infinity need not be known
+   (Proposition 9.2(b')).                                                          *)
+SecondKindAtInfinityQ[T_, rem_] := Module[{dg, rr},
+  If[Length[T["gens"]] != 1 || T["q"] === None, Return[False]];
+  dg = T["derivs"][[1]];
+  If[! (dg[[1]] === 1 && MatchQ[Rest[dg], {0 ...}]), Return[False]];
+  rr = ResInfAll[T, rem, T["gens"][[1]]];
+  rr =!= None && AllTrue[rr, IsZero]];
+
+(* InfDivisorData[T, f, detLogs, g]
+   What the mod-p certificate needs at the places over g = oo.  Proposition 9.4 completes
+   the finite part of a residue-divisor component symmetrically at the two places over
+   g = oo of an even-degree model (a root of q is moved to infinity mod p, and
+   2 R ~ oo_+ + oo_-); that is the true completion of a component exactly when its
+   coordinates at oo_+ and oo_- agree, the coordinate at oo_+- being the residue r_+- of
+   f dx there minus Sum_i c_i ord_{oo_+-}(u_i) over the logands u_i already split off with
+   coefficients c_i.  Returns None when no condition is needed (an odd-degree model: one
+   place at infinity), "unknown" when r_+- cannot be computed (several generators and a
+   pole of f dx at infinity), else {r_+, r_-, {{c_i, ord_+(u_i), ord_-(u_i)}, ...}}.  *)
+InfDivisorData[T_, f_, detLogs_, g_] := Module[{q = T["q"], dg, rr, vals, exact, vD, exactD, orders = {}, vu, ex},
+  If[OddQ[Exponent[q, g]], Return[None]];
+  dg = T["derivs"][[Position[T["gens"], g][[1, 1]]]];
+  If[Length[T["gens"]] == 1 && dg[[1]] =!= 0 && MatchQ[Rest[dg], {0 ...}],
+    rr = ResInf[T, Can[#/dg[[1]]] & /@ TPad[T, f], g],                    (* f dx = (f/Dg) dg (Lemma 3.4) *)
+    {vals, exact} = VInf[T, f, g]; {vD, exactD} = VInf[T, dg, g];       (* dx = dg/Dg: v_P(f dx) = v_P(f) - 2 - v_P(Dg); no pole, no residue *)
+    If[exact && exactD && Length[vals] == 2 && Length[vD] == 2 &&
+        AllTrue[Transpose[{vals, vD}], #[[2]] =!= Infinity && (#[[1]] === Infinity || #[[1]] - 2 - #[[2]] >= 0) &],
+      rr = {0, 0},
+      Return["unknown"]]];
+  Do[{vu, ex} = VInf[T, u[[2]], g];
+    If[! ex || Length[vu] != 2 || MemberQ[vu, Infinity], Return["unknown", Module]];
+    AppendTo[orders, {u[[1]], vu[[1]], vu[[2]]}], {u, detLogs}];
+  {rr[[1]], rr[[2]], orders}];
+
+(* NontorsionDivisor[T, pending, verbose, infd]
+   Proposition 9.4 for the residue divisor that Algorithm 3(a)-(d) leaves
+   unrealised (pending = {{p, pts, taus}, ...} on y^2 = q with constant
+   coordinates): each component over a Q-basis of the residues
+   (QBasisDivisors) is reduced modulo good primes and the orders of its
+   class in the Jacobians compared (NontorsionDivisorCertificate).  Returns
+   {data, divisor} for the first component certified non-torsion, the
+   integral then being non-elementary by Corollary 7.6; else None.  With
+   infd = InfDivisorData[...] the residues at the two places over infinity
+   and the coefficients of the logands already split off join the residues
+   in the Q-basis decomposition, and a component is certified only when its
+   completion at oo_+ and oo_- is symmetric (the reduction mod p completes it
+   so); a component supported at infinity only is skipped.                *)
+NontorsionDivisor[T_, pending_, verbose_: False, infd_: None] := Catch[Module[{gens = T["gens"], g, q = T["q"], places, consts, nf, an, mu, coords, qb, pl, certd, dv, z,
+    taus, nfin, extra, row, ns, cplus, cminus},
+  g = pending[[1, 2, 1, 1]];
+  If[! FreeQ[q, Alternatives @@ DeleteCases[gens, g]] || AnyTrue[pending, #[[2, 1, 1]] =!= g &], Return[None]];
+  places = Cases[Flatten[Transpose[{#[[2]], #[[3]]}] & /@ pending, 1], {_, tau_} /; tau =!= 0];
+  taus = places[[All, 2]]; nfin = Length[taus];
+  extra = If[infd === None, {}, Join[{infd[[1]], infd[[2]]}, infd[[3]][[All, 1]]]];
+  consts = Join[Flatten[{#[[1, 2]], #[[1, 3]], #[[2]]} & /@ places], extra];
+  If[! FreeQ[consts, Alternatives @@ gens] || ! FreeQ[CoefficientList[q, g], Alternatives @@ gens], Return[None]];
+  (* one number field Q(theta) for the coordinates and the residues *)
+  nf = ToNumberField[consts];
+  an = FirstCase[nf, _AlgebraicNumber, None];
+  mu = If[an === None, None, CoefficientList[MinimalPolynomial[an[[1]], z], z]];
+  coords = PadRight[If[Head[#] === AlgebraicNumber, #[[2]], {#}] & /@ nf];
+  If[! MatrixQ[coords, MatchQ[#, _Integer | _Rational] &], Return[None]];
+  qb = QBasisDivisors[Join[taus, extra]];
+  If[qb === None, Return[None]];
+  Do[row = bn[[2]]; ns = row[[;; nfin]];
+    If[AllTrue[ns, # == 0 &], Continue[]];                              (* a component supported at infinity only *)
+    If[infd =!= None,
+      cplus = row[[nfin + 1]] - Sum[row[[nfin + 2 + k]] infd[[3, k, 2]], {k, Length[infd[[3]]]}];
+      cminus = row[[nfin + 2]] - Sum[row[[nfin + 2 + k]] infd[[3, k, 3]], {k, Length[infd[[3]]]}];
+      If[cplus != cminus,
+        If[verbose, Print["  mod-p certificate withheld for the component with coefficient ", bn[[1]], ": its completion at the places over ", g, " = oo is ", cplus, " oo_+ + ", cminus, " oo_-, not symmetric"]];
+        Continue[]]];
+    pl = Table[If[ns[[i]] == 0, Nothing, {{coords[[3 i - 2]], coords[[3 i - 1]]}, ns[[i]]}], {i, nfin}];
+    certd = NontorsionDivisorCertificate[q, g, pl, mu];
+    If[certd[[1]],
+      dv = StringRiffle[Table[If[ns[[i]] == 0, Nothing, ToString[ns[[i]]] <> "*(" <> ToString[places[[i, 1, 2]], InputForm] <> ", " <> ToString[places[[i, 1, 3]], InputForm] <> ")"], {i, nfin}], " + "];
+      If[verbose, Print["  the residue divisor ", dv, " (coefficient ", bn[[1]], ") is certified non-torsion by reduction mod p: ", certd[[2]]]];
+      Throw[{certd[[2]], dv}, "ntdiv"]],
+    {bn, qb}];
+  None], "ntdiv"];
 
 (* PairReduce[e, Ysym, q]
    The pair {a, b} = a + b y of an expression rational in the generators
@@ -633,21 +788,40 @@ RationalPoint[q_, g_] := Module[{v, y0},
     {g0, DeleteDuplicates[Flatten[Table[{num/den, -num/den}, {num, 0, 12}, {den, 1, 3}]]]}];
   None];
 
+(* AlgebraicPoint[q, g]
+   A point {g0, Sqrt[q(g0)]} over the quadratic field Q(Sqrt[q(g0)]) when the conic has
+   no rational point: a small rational g0 with q(g0) != 0, a positive value preferred
+   (the parametrised tower is then transcendental over that number field, an isomorphic
+   function field, and the radical never enters the analysis).                        *)
+AlgebraicPoint[q_, g_] := Module[{best = None, bv = None, v},
+  Do[v = q /. g -> g0;
+    If[! MatchQ[v, _Integer | _Rational] || v == 0, Continue[]];
+    If[bv === None || (v > 0 && (bv < 0 || v < bv)) || (v < 0 && bv < 0 && -v < -bv), best = {g0, Sqrt[v]}; bv = v],
+    {g0, {0, 1, -1, 2, -2, 1/2, -1/2, 3, -3}}];
+  best];
+
+(* AlgPolesQ[f, g]: does a denominator of the pair f have an irreducible factor of
+   degree >= 2 in g? *)
+AlgPolesQ[f_, g_] := AnyTrue[f, # =!= 0 && AnyTrue[Rest[FactorList[Denominator[Together[#]]]], Exponent[#[[1]], g] >= 2 &] &];
+
 (* ConicToLine[T, f]
    Rational parametrisation of a conic y^2 = q(g), deg q = 2, through a
    rational point (g0, y0): the pencil y = y0 + w (g - g0) meets the conic
    in the second point
      g = (2 y0 w - (q2 + w^2) g0 - q1)/(q2 - w^2),   y = y0 + w (g - g0),
    so the curve disappears and the whole tower is rewritten over Q(w) (w
-   replaces g at its position; q becomes None).  Returns {T', f', back} with
-   back the rule w -> (y - y0)/(g - g0), or None without a rational point.
+   replaces g at its position; q becomes None).  Returns {T', f', back, rational}
+   with back the rule w -> (y - y0)/(g - g0) and rational True when the point is
+   rational (else it lies over a quadratic field, AlgebraicPoint); None when
+   neither is found.
    On a genus-0 curve every S'-unit and residue divisor is then a question
    about rational functions of w, which the flattened-tower machinery
    answers without any extension-field arithmetic over the curve.         *)
-ConicToLine[T_, f_] := Module[{gens = T["gens"], q = T["q"], g, q2, q1, q0, pt, g0, y0, w, Y, gNew, yNew, conv, Dg, num, Dw, newDerivs, newGens, T2, f2},
+ConicToLine[T_, f_] := Module[{gens = T["gens"], q = T["q"], g, q2, q1, q0, pt, g0, y0, w, Y, gNew, yNew, conv, Dg, num, Dw, newDerivs, newGens, T2, f2, rational},
   g = SelectFirst[gens, FreeQ[q, Alternatives @@ DeleteCases[gens, #]] &];
   {q0, q1, q2} = PadRight[CoefficientList[q, g], 3];
-  pt = RationalPoint[q, g];
+  pt = RationalPoint[q, g]; rational = pt =!= None;
+  If[pt === None, pt = AlgebraicPoint[q, g]];
   If[pt === None, Return[None]];
   {g0, y0} = pt;
   w = Unique["w"]; Y = Unique["Y"];
@@ -662,7 +836,7 @@ ConicToLine[T_, f_] := Module[{gens = T["gens"], q = T["q"], g, q2, q1, q0, pt, 
   newGens = gens /. g -> w;
   T2 = Tower[newGens, newDerivs, None];
   f2 = conv[f];
-  {T2, f2, {w -> (Sqrt[q] - y0)/(g - g0)}}];
+  {T2, f2, {w -> (Sqrt[q] - y0)/(g - g0)}, rational}];
 
 (* ------------------------------------------ residues in the residue field *)
 (* ConstDir[T, p]
@@ -801,7 +975,11 @@ ResidueClasses[T_, p_, tp_, Y_, verbose_: False] := Catch[Module[
     {fac, facs}];
   Do[
     If[q === None,
-      pc = Monic[PolynomialGCD[p, tau0 - c, Extension -> Automatic], g];
+      pc = PolynomialGCD[p, tau0 - c, Extension -> Automatic];
+      (* a Root-object residue c: the gcd is kept as a polynomial in c (Monic's RootReduce
+         would rewrite its coefficients as Root objects of their own minimal polynomials),
+         so that GroupRootLogs can read it as v(z, g) over the roots z of c's polynomial *)
+      pc = If[Head[c] === Root, Collect[Expand[pc/Coefficient[pc, g, Exponent[pc, g]]], g, Together], Monic[pc, g]];
       If[Exponent[pc, g] >= 1, AppendTo[principal, {c, pc}]];
       Continue[]];
     If[m >= 3,
@@ -1072,32 +1250,125 @@ NontorsionCertificate[q_, x_, nprimes_: 4, pmax_: 1000] := Catch[Module[{Q, lc, 
     AppendTo[data, {p, Np}];
     If[Length[data] >= nprimes, Break[]],
     {p, Select[Range[3, pmax], PrimeQ]}];
-  Do[{p1, n1} = data[[i]]; {p2, n2} = data[[j]];
-    r = n1/n2; num = Numerator[r]; den = Denominator[r];
-    okNum = num == 1 || FactorInteger[num][[All, 1]] === {p1};
-    okDen = den == 1 || FactorInteger[den][[All, 1]] === {p2};
-    If[! (okNum && okDen), Throw[{True, data}, "nt"]],
-    {i, Length[data]}, {j, i + 1, Length[data]}];
-  {False, data}], "nt"];
+  {IncompatibleQ[data], data}], "nt"];
 
-(* ExactBounds[T, f]
-   Part I, Corollary 7.4 for n = 1, m = 2, q squarefree: the exact degree
-   bound of the numerators b_i of v = (b_0 + b_1 y)/den_v at infinity.  With
-   e the ramification at infinity (2 for deg q odd, 1 for even), v_oo(y) =
-   -deg q (odd) or -deg q/2 (even), Delta = deg den_v (den_v = prod
-   fac^(j-1) over the squarefree decomposition of the denominator of f),
-   and k = max(0, e - v_oo(f)) the allowed pole order of v at infinity,
-   B_i = floor((k + e Delta + v_oo(w_i))/e).                                *)
-ExactBounds[T_, f_] := Module[{x = T["gens"][[1]], q = T["q"], d, e, vw, den, sqf, Delta, vinf, vf, k},
-  d = Exponent[q, x]; e = If[OddQ[d], 2, 1];
-  vw = {0, If[OddQ[d], -d, -d/2]};
-  den = PolynomialLCM[Denominator[Can[f[[1]]]], Denominator[Can[f[[2]]]]];
-  sqf = Rest[FactorSquareFreeList[den]];
-  Delta = Total[(#[[2]] - 1) Exponent[#[[1]], x] & /@ sqf];
-  vinf[c_] := With[{cc = Can[c]}, If[cc === 0, Infinity, e (Exponent[Denominator[cc], x] - Exponent[Numerator[cc], x])]];
-  vf = Min[vinf[f[[1]]], vinf[f[[2]]] + vw[[2]]];
-  k = Max[0, e - vf];
-  Table[Floor[(k + e Delta + vw[[i]])/e], {i, 2}]];
+(* IncompatibleQ[data]
+   No finite N has N = N_p p^a for every {p, N_p} in data: for two primes
+   N_{p1}/N_{p2} = p2^b/p1^a, so in lowest terms the numerator must be a
+   power of p2 (or 1) and the denominator a power of p1 (or 1).          *)
+IncompatibleQ[data_] := Or @@ Flatten[Table[
+  With[{p1 = data[[i, 1]], p2 = data[[j, 1]], r = data[[i, 2]]/data[[j, 2]]},
+    ! ((Numerator[r] == 1 || FactorInteger[Numerator[r]][[All, 1]] === {p2}) &&
+       (Denominator[r] == 1 || FactorInteger[Denominator[r]][[All, 1]] === {p1}))],
+  {i, Length[data]}, {j, i + 1, Length[data]}]];
+
+(* ------------------------------------------- Jacobian arithmetic mod p
+   Cantor's algorithm on w^2 = f(jv), deg f = 2g + 1 (one place at
+   infinity), over GF(p): divisor classes as reduced Mumford pairs {u, v},
+   u monic of degree <= g, v^2 = f mod u, polynomials in the symbol jv with
+   coefficients in 0..p-1 (PolynomialMod); the identity is {1, 0}.  Used
+   by NontorsionDivisorCertificate (Proposition 9.4 for a residue divisor
+   supported at finite places).                                            *)
+CantorAdd[f_, D1_, D2_, p_] := Module[{u1, v1, u2, v2, d1, e1, e2, d, c1, c2, s1, s2, u, v, t, g, monic},
+  monic[w_] := PolynomialMod[PowerMod[Coefficient[w, jv, Exponent[w, jv]], -1, p] w, p];
+  {u1, v1} = D1; {u2, v2} = D2;
+  {d1, {e1, e2}} = PolynomialExtendedGCD[u1, u2, jv, Modulus -> p];             (* d1 = e1 u1 + e2 u2 *)
+  {d, {c1, c2}} = PolynomialExtendedGCD[d1, PolynomialMod[v1 + v2, p], jv, Modulus -> p];   (* d = c1 d1 + c2 (v1 + v2); the sum reduced first: v1 + v2 may be 0 mod p *)
+  s1 = PolynomialMod[c1 e1, p]; s2 = PolynomialMod[c1 e2, p];
+  u = PolynomialQuotient[u1 u2, d^2, jv, Modulus -> p];
+  t = PolynomialMod[s1 u1 v2 + s2 u2 v1 + c2 (v1 v2 + f), p];
+  v = PolynomialRemainder[PolynomialQuotient[t, d, jv, Modulus -> p], u, jv, Modulus -> p];
+  g = (Exponent[f, jv] - 1)/2;
+  While[Exponent[u, jv] > g,
+    u = monic[PolynomialQuotient[f - v^2, u, jv, Modulus -> p]];
+    v = PolynomialRemainder[-v, u, jv, Modulus -> p]];
+  {monic[u], PolynomialMod[v, p]}];
+
+CantorMul[f_, n_, D_, p_] := Module[{R = {1, 0}, Q = D, k = n},
+  While[k > 0,
+    If[OddQ[k], R = CantorAdd[f, R, Q, p]];
+    Q = CantorAdd[f, Q, Q, p]; k = Quotient[k, 2]];
+  R];
+
+(* DivisorOrderModP[f, pts, p]
+   The order of the class of sum_P n_P (P - oo) in the Jacobian of
+   w^2 = f(jv) over GF(p), pts = {{{x0, y0}, n_P}, ...}: the Mumford
+   representative of the divisor by Cantor's algorithm, a multiple M of the
+   order by baby-step giant-step in the Weil interval [(Sqrt[p] - 1)^2g,
+   (Sqrt[p] + 1)^2g] (which contains #J(GF(p))), and the least divisor of
+   M annihilating the class; None if no multiple is found.                *)
+DivisorOrderModP[f_, pts_, p_] := Module[{D = {1, 0}, P, g, lo, hi, m, baby, B, G, step, M = None, j},
+  Do[P = {PolynomialMod[jv - pt[[1, 1]], p], Mod[Sign[pt[[2]]] pt[[1, 2]], p]};
+    Do[D = CantorAdd[f, D, P, p], {Abs[pt[[2]]]}],
+    {pt, pts}];
+  If[D === {1, 0}, Return[1]];
+  g = (Exponent[f, jv] - 1)/2;
+  lo = Max[1, Floor[N[(Sqrt[p] - 1)^(2 g)]] - 1]; hi = Ceiling[N[(Sqrt[p] + 1)^(2 g)]] + 1;
+  m = Floor[Sqrt[hi - lo]] + 1;
+  baby = <||>; B = {1, 0};
+  Do[If[! KeyExistsQ[baby, B], baby[B] = j]; B = CantorAdd[f, B, D, p], {j, 0, m - 1}];
+  G = CantorMul[f, lo, D, p]; step = CantorMul[f, m, D, p];
+  Do[j = Lookup[baby, Key[G], None];
+    If[j =!= None && lo + i m - j > 0, M = lo + i m - j; Break[]];        (* [lo + i m] D = [j] D *)
+    G = CantorAdd[f, G, step, p],
+    {i, 0, m}];
+  If[M === None, Return[None]];
+  SelectFirst[Divisors[M], CantorMul[f, #, D, p] === {1, 0} &, None]];
+
+(* OddModel[f, r, p]
+   For f in GF(p)[jv] of even degree d with a root r: the odd-degree model
+   w^2 = f'(jv) of w^2 = f, f'(v) = v^d f(r + 1/v) of degree d - 1 (the
+   coefficient of v^d is f(r) = 0), and the point map
+   {x0, y0} -> {1/(x0 - r), y0/(x0 - r)^(d/2)}.                            *)
+OddModel[f_, r_, p_] := With[{d = Exponent[f, jv]},
+  {PolynomialMod[Expand[(f /. jv -> r + 1/jv) jv^d], p],
+   Function[{x0, y0}, With[{s = PowerMod[Mod[x0 - r, p], -1, p]}, {s, Mod[y0 PowerMod[s, d/2, p], p]}]]}];
+
+HornerModP[cs_, t_, p_] := Fold[Mod[#1 t + #2, p] &, 0, Reverse[cs]];      (* cs lowest first *)
+
+(* NontorsionDivisorCertificate[q, x, places, mu, nprimes, pmax, budget]
+   Certify that the class of a degree-0 divisor sum n_P P on y^2 = q with
+   places P = (x0, y0) of constant coordinates is NOT torsion, by reduction
+   modulo primes of good reduction (Proposition 9.4 for the residue divisor
+   that Algorithm 3(d) leaves unrealised): if the class had finite order N,
+   its reduction at a degree-one prime above p of the number field
+   K = Q(theta) of the coordinates would have order N_p with N = N_p p^a,
+   a >= 0 (reduction is injective on the prime-to-p torsion), so two primes
+   with incompatible N_p exclude every finite order.  N_p is the order of
+   the reduced class in the Jacobian over GF(p) (DivisorOrderModP), on an
+   odd-degree model when deg q is even (a root of q mod p moved to
+   infinity; primes without one are skipped); primes whose Weil bound
+   exceeds budget are skipped.  places = {{{a, b}, n}, ...} with a, b the
+   coordinates of x0, y0 over Q on the power basis of theta (lowest first),
+   mu the minimal polynomial of theta as its CoefficientList (None for
+   K = Q).  Returns {certified, {{p, N_p}, ...}}.                          *)
+NontorsionDivisorCertificate[q_, x_, places_, mu_, nprimes_: 2, pmax_: 1000, budget_: 2 10^7] := Catch[Module[
+  {d = Exponent[q, x], twoG, qc, muc, bad, data = {}, red, thetas, th, ev, pts, f, roots, mp, Np, z},
+  twoG = If[OddQ[d], d - 1, d - 2];
+  qc = CoefficientList[q, x]; muc = If[mu === None, {0, 1}, mu];
+  bad = 2 Times @@ (Numerator[#] Denominator[#] & /@ DeleteCases[Join[qc, muc,
+      {Discriminant[q, x], Discriminant[Sum[muc[[i]] z^(i - 1), {i, Length[muc]}], z]}, Flatten[places[[All, 1]]]], 0]);
+  Do[If[Mod[bad, p] == 0 || (Sqrt[p] + 1)^twoG > budget, Continue[]];
+    red = Function[c, Mod[Numerator[c] PowerMod[Denominator[c], -1, p], p]];
+    thetas = Select[Range[0, p - 1], HornerModP[red /@ muc, #, p] == 0 &];
+    If[thetas === {}, Continue[]];                     (* no degree-one prime of K above p *)
+    th = thetas[[1]];
+    ev = Function[a, HornerModP[red /@ a, th, p]];
+    pts = {{ev[#[[1, 1]]], ev[#[[1, 2]]]}, #[[2]]} & /@ places;
+    f = Sum[red[qc[[i]]] jv^(i - 1), {i, Length[qc]}];
+    If[EvenQ[d],
+      roots = Select[Range[0, p - 1], Mod[f /. jv -> #, p] == 0 && ! MemberQ[pts[[All, 1, 1]], #] &];
+      If[roots === {}, Continue[]];
+      {f, mp} = OddModel[f, roots[[1]], p];
+      pts = {mp[#[[1, 1]], #[[1, 2]]], #[[2]]} & /@ pts];
+    If[AnyTrue[pts, Mod[#[[1, 2]]^2 - (f /. jv -> #[[1, 1]]), p] != 0 &], Continue[]];
+    Np = DivisorOrderModP[f, pts, p];
+    If[Np === None, Continue[]];
+    AppendTo[data, {p, Np}];
+    If[IncompatibleQ[data], Throw[{True, data}, "ntd"]];
+    If[Length[data] >= nprimes, Break[]],
+    {p, Select[Range[3, pmax], PrimeQ]}];
+  {False, data}], "ntd"];
 
 (* ResidueFree[T, g, Y]
    For n = 1, D = d/dx: certify that the differential g dx (g a pair) has
@@ -1125,6 +1396,303 @@ ResidueFree[T_, g_, Y_] := Catch[Module[{x = T["gens"][[1]], q = T["q"], den, e,
       {rho, rts}],
     {fac, Rest[FactorList[den]]}];
   True], "rf"];
+
+
+(* ------------------------------------------- bounds at the places (S8.2) *)
+
+(* OrdInf[e, g]: v_oo(e) = deg_g(den) - deg_g(num) of a rational function;
+   Infinity for 0.  LcInf[e, g]: the leading coefficient at g = oo, a
+   function of the other generators.                                        *)
+OrdInf[e_, g_] := With[{c = Can[e]}, If[c === 0, Infinity, Exponent[Denominator[c], g] - Exponent[Numerator[c], g]]];
+LcInf[e_, g_] := With[{c = Can[e]}, Can[Coefficient[Numerator[c], g, Exponent[Numerator[c], g]]/
+  Coefficient[Denominator[c], g, Exponent[Denominator[c], g]]]];
+
+(* VInf[T, u, g]
+   The valuations of the tuple u at the places over g = oo, one entry per
+   place in the units of its uniformiser, and whether they are exact: for
+   m <= 2 exact (a series at the two unramified places when the two
+   coordinates could cancel); for m >= 3 with g in q the Gauss lower bound
+   of Part I, S6.1, exact when its minimum is attained once, else the
+   expansion at the place (exact for m | 12).                               *)
+VInf[T_, u0_, g_] := Module[{q = T["q"], m = T["m"], u = TPad[T, u0], d, a, b, va, vb, vy, uu, qs, lc, out, s, e, dp, vals, expr, ser, ord, lo, ex, ej},
+  If[q === None || FreeQ[q, g], Return[{{Min[OrdInf[#, g] & /@ u]}, True}]];
+  d = Exponent[q, g];
+  If[m >= 3,
+    s = GCD[m, d]; e = m/s; dp = d/s;
+    (* the s places over g = oo have ramification e and ord(y) = -dp; term i of u on the
+       Trager basis has valuation e ord_oo(u_i) - i dp + e deg E_i (the Gauss bound of
+       Part I, S6.1), exact at every place when the minimal term is unique.  Otherwise
+       the expansion at the place (InfExpansion), exact when zeta_m is a radical
+       (m | 12), else the lower bound. *)
+    vals = Table[If[u[[i + 1]] === 0, Nothing,
+      e OrdInf[u[[i + 1]], g] - (i dp - e If[T["E"][[i + 1]] === 1, 0, Exponent[T["E"][[i + 1]], g]])], {i, 0, m - 1}];
+    If[vals === {}, Return[{ConstantArray[Infinity, s], True}]];
+    lo = Min[vals];
+    If[Count[vals, lo] == 1, Return[{ConstantArray[lo, s], True}]];
+    If[Mod[12, m] != 0, Return[{ConstantArray[lo, s], False}]];
+    ex = InfExpansion[T, u, g];
+    out = Table[ej = Together[ex[[1]] /. ex[[3]] -> RRad[RootOfUnity[m]^j]]; ord = Infinity;
+      Do[ser = Normal[Series[ej, {ex[[2]], 0, order}]];
+        If[ser =!= 0, ord = Exponent[ser, ex[[2]], Min]; Break[]], {order, {lo + 4, lo + 12, lo + 30}}];
+      ord, {j, 0, s - 1}];
+    Return[{out, True}]];
+  {a, b} = u[[1 ;; 2]];
+  va = OrdInf[a, g]; vb = OrdInf[b, g];
+  If[OddQ[d], Return[{{Min[2 va, 2 vb - d]}, True}]];           (* ramified: parities differ *)
+  vy = -d/2;
+  If[a === 0 || b === 0 || va =!= vb + vy, Return[{{Min[va, vb + vy], Min[va, vb + vy]}, True}]];
+  uu = Unique["u"];
+  qs = Expand[(q /. g -> 1/uu) uu^d]; lc = qs /. uu -> 0;          (* q(1/u) u^d, a unit at u = 0; Sqrt[lc] split off, or Series returns a Piecewise *)
+  out = Table[
+    expr = Together[(a /. g -> 1/uu) + sg Sqrt[lc] (b /. g -> 1/uu) Sqrt[Cancel[qs/lc]]/uu^(d/2)];
+    ord = Infinity;
+    Do[ser = Normal[Series[expr, {uu, 0, order}]];
+      If[ser =!= 0, ord = Exponent[ser, uu, Min]; Break[]], {order, {va + 4, va + 12, va + 30}}];
+    ord, {sg, {1, -1}}];
+  {out, True}];
+
+(* Kind[T, k]: "prim", "exp" or "tan" if t_k is a primitive, hyperexponential
+   or hypertangent monomial over the field below it, else "other";
+   IndependentQ[T, i]: no other generator's derivative, nor q, involves t_i. *)
+Kind[T_, k_] := Module[{g = T["gens"][[k]], above = T["gens"][[k ;;]], d = T["derivs"][[k]]},
+  Which[AllTrue[d, FreeQ[Can[#], Alternatives @@ above] &], "prim",
+        AllTrue[d, FreeQ[Can[#/g], Alternatives @@ above] &], "exp",
+        AllTrue[d, FreeQ[Can[#/(1 + g^2)], Alternatives @@ above] &], "tan",
+        True, "other"]];
+IndependentQ[T_, i_] := (T["q"] === None || FreeQ[T["q"], T["gens"][[i]]]) &&
+  AllTrue[Delete[T["derivs"], i], FreeQ[#, T["gens"][[i]]] &];
+
+(* LamCoeffs[T, k, g]: the leading coefficients at g = oo (g === None: the
+   whole coordinates) of D t_k, of D t_k / t_k for a hyperexponential and of
+   D t_k / (1 + t_k^2) for a hypertangent t_k.                             *)
+LamCoeffs[T_, k_, g_] := Module[{gk = T["gens"][[k]], div, comps},
+  div = Switch[Kind[T, k], "exp", gk, "tan", 1 + gk^2, _, 1];
+  comps = Can[#/div] & /@ DeleteCases[T["derivs"][[k]], 0];
+  If[g === None, comps, LcInf[#, g] & /@ comps]];
+
+(* LcPlace[T, u, g]: the leading coefficients of the tuple u at the places
+   over g = oo, one per place as in VInf, or None where the implementation
+   does not read them (m >= 3, a ramified place, a coordinate carrying y off
+   the curve variable).                                                    *)
+LcPlace[T_, u0_, g_] := Module[{q = T["q"], m = T["m"], u = TPad[T, u0], d, a, b, va, uu, qs, lc, out, expr, ser, k},
+  If[q === None || FreeQ[q, g],
+    If[u[[1]] === 0 || AnyTrue[Rest[u], # =!= 0 &], Return[None]];
+    Return[{LcInf[u[[1]], g]}]];
+  d = Exponent[q, g];
+  {a, b} = u[[1 ;; 2]];
+  If[m >= 3 || OddQ[d] || (a === 0 && b === 0), Return[None]];
+  va = Min[OrdInf[a, g], OrdInf[b, g] - d/2];
+  uu = Unique["u"];
+  qs = Expand[(q /. g -> 1/uu) uu^d]; lc = qs /. uu -> 0;
+  out = Table[
+    expr = Together[(a /. g -> 1/uu) + sg Sqrt[lc] (b /. g -> 1/uu) Sqrt[Cancel[qs/lc]]/uu^(d/2)];
+    k = None;
+    Do[ser = Normal[Series[expr, {uu, 0, order}]];
+      If[ser =!= 0, k = Can[Coefficient[ser, uu, Exponent[ser, uu, Min]]]; Break[]], {order, {va + 4, va + 12, va + 30}}];
+    k, {sg, {1, -1}}];
+  If[MemberQ[out, None], None, out]];
+
+(* ClassMod[e, pp, g, n, gens]: the class of e / pp^n modulo the prime pp of
+   F[g] when it is a constant of Fbar (a number), else None.              *)
+ClassMod[e_, pp_, g_, n_, gens_] := Module[{c = Can[e/pp^n], egcd, cls},
+  egcd = Quiet[Check[PolynomialExtendedGCD[Denominator[c], pp, g], $Failed]];
+  If[egcd === $Failed || ! FreeQ[egcd[[1]], g], Return[None]];
+  cls = Quiet[Check[Can[PolynomialRemainder[Expand[Numerator[c] egcd[[2, 1]]/egcd[[1]]], pp, g]], $Failed]];
+  If[cls === $Failed || ! FreeQ[cls, Alternatives @@ gens], None, cls]];
+
+(* InQSpanQ[rho, mus]: rho lies in the Q-span of the algebraic numbers mus,
+   the kernel-degree test of the extended (K1): N_v = {a : -a rho in
+   sum_k Z mu_k}.  True on any failure, which leaves the place to the guess. *)
+InQSpanQ[rho_, mus_] := Module[{nf, vecs, n},
+  If[mus === {}, Return[False]];
+  nf = Quiet[Check[ToNumberField[Prepend[mus, rho]], $Failed]];
+  If[nf === $Failed || ! ListQ[nf] ||
+     ! AllTrue[nf, Head[#] === AlgebraicNumber || Element[#, Rationals] === True &], Return[True]];
+  vecs = If[Head[#] === AlgebraicNumber, Last[#], {#}] & /@ nf;
+  n = Max[Length /@ vecs];
+  vecs = PadRight[#, n] & /@ vecs;
+  MatrixRank[vecs] == MatrixRank[Rest[vecs]]];
+
+(* InfConsts[T, g, pl, names]: rho ("pi", the coefficient of pi^(s+1) in
+   D pi = -D g pi^2) and the mu_k of the named hyperexponential generators
+   at the pl-th place over g = oo, as numbers where LcPlace reads them.   *)
+InfConsts[T_, g_, pl_, names_] := Module[{gens = T["gens"], i, lc},
+  i = Position[gens, g][[1, 1]];
+  Association @@ Table[
+    lc = LcPlace[T, If[nm === "pi", -T["derivs"][[i]], Can[#/nm] & /@ T["derivs"][[Position[gens, nm][[1, 1]]]]], g];
+    nm -> If[lc === None || Length[lc] < pl, None, lc[[pl]]], {nm, names}]];
+
+(* SpecialConsts[T, pp, Dpi, s, g, names]: the same at the places over the
+   special pp = pi of F[g]: the classes of D pi / pi^(s+1) and of
+   (D t_k / t_k) / pi^s modulo pp, when they are constants of Fbar, the same
+   at every place over pp.                                                 *)
+SpecialConsts[T_, pp_, Dpi_, s_, g_, names_] := Module[{gens = T["gens"], pair, cls},
+  Association @@ Table[
+    pair = If[nm === "pi", Dpi, Can[#/nm] & /@ T["derivs"][[Position[gens, nm][[1, 1]]]]];
+    cls = If[# === 0, 0, ClassMod[#, pp, g, If[nm === "pi", s + 1, s], gens]] & /@ pair;
+    nm -> If[cls[[1]] === None || AnyTrue[Rest[cls], # =!= 0 &], None, cls[[1]]], {nm, names}]];
+
+(* DecideBound: Algorithm 6, Step 3 -- the criterion (K1)-(K4) of Proposition
+   8.11 that proves the bound at the place, or None.  own: the generators of
+   the place; mono: the index of the monomial the place belongs to or None;
+   A: the attaining generators; kinds: their kinds; rhoFree: the leading
+   coefficient of D pi is free of A; lamK1/lamK4: the leading coefficients of
+   the attaining generators are free of A / are constants; rhoR: the
+   coefficient for (K3) when the residue field is F(x), else None; consts:
+   names -> the values at the place of rho ("pi") and of the mu_k of the
+   named hyperexponential generators, for (K1) with attaining
+   hyperexponentials (Remark 8.14).                                       *)
+DecideBound[T_, own_, mono_, r_, A_, kinds_, rhoFree_, lamK1_, lamK4_, rhoR_, upperAllAttain_, consts_] := Module[{x = T["gens"][[1]], R, exps, vals, basePlace},
+  (* (K4) at a place whose own residue field is Fbar: a place of the curve, or x = oo of
+     the base F(x) with Dx in F(x) (the same proof: kappa_v is a hyperexponential /
+     hypertangent tower over Fbar, and rho_v^(r) in Fbar* is not a derivative there) *)
+  basePlace = own === {x} && FreeQ[T["derivs"][[1, 1]], Alternatives @@ Rest[T["gens"]]] && MatchQ[Rest[T["derivs"][[1]]], {0 ...}];
+  Which[
+    mono =!= None && Kind[T, mono] =!= "other" && IndependentQ[T, mono], "K2",
+    r == 0 && rhoFree && lamK1 && AllTrue[kinds, MemberQ[{"prim", "exp"}, #] &] &&
+      (exps = Pick[A, kinds, "exp"]; exps === {} ||
+        (vals = consts[Prepend[exps, "pi"]]; vals =!= None && AllTrue[Values[vals], # =!= None && NumericQ[#] &] &&
+          ! InQSpanQ[vals["pi"], vals[#] & /@ exps])), "K1",
+    r >= 1 && rhoR =!= None && (R = Integrate[Can[rhoR], x]; ! FreeQ[R, Log | ArcTan | ArcTanh | RootSum]), "K3",
+    r >= 1 && rhoFree && own =!= {} && (T["q"] =!= None || basePlace) && upperAllAttain && lamK4 &&
+      AllTrue[kinds, MemberQ[{"exp", "tan"}, #] &] && Count[kinds, "exp"] <= 1, "K4",
+    True, None]];
+
+(* InfData[key, T, rem]: Algorithm 6 at the places over t_i = oo for every
+   generator, once per analysis: per generator {criterion or None, e_P, the
+   list of {s, r, v_P(rem)} over the places, chain-possible}.              *)
+InfData[key_, T_, rem_] := Module[{gens = T["gens"], q = T["q"], m = T["m"], curve, out, g, own, items, exact, vrem, d, eP, lam, rhoSyms, rhoR, crit, places, chain, shifts, s, r, A, c, i},
+  If[KeyExistsQ[$analyses[key], "inf"], Return[$analyses[key]["inf"]]];
+  curve = Select[gens, ! FreeQ[q, #] &];
+  out = Table[
+    g = gens[[i]];
+    own = If[MemberQ[curve, g], Union[{g}, curve], {g}];
+    items = Table[{gens[[k]], VInf[T, T["derivs"][[k]], g], VInf[T, TScalar[T, gens[[k]]], g][[1]]}, {k, Length[gens]}];
+    If[q =!= None, AppendTo[items, {"y", VInf[T, T["Dw"][[2]], g], VInf[T, TUnit[T, 1], g][[1]]}]];
+    exact = AllTrue[items, #[[2, 2]] &];
+    vrem = VInf[T, rem, g][[1]];
+    d = If[MemberQ[curve, g], Exponent[q, g], 0];
+    eP = Which[! MemberQ[curve, g], 1, m == 2, If[OddQ[d], 2, 1], True, m/GCD[m, d]];
+    lam = Table[LamCoeffs[T, k, g], {k, Length[gens]}];
+    rhoSyms = LcInf[#, g] & /@ DeleteCases[T["derivs"][[i]], 0];
+    rhoR = If[q === None && Length[gens] == 2 && i == 2 && T["derivs"][[1, 1]] === 1, -LcInf[T["derivs"][[2, 1]], g], None];
+    crit = None; places = {}; chain = False;
+    Do[shifts = Association @@ Table[If[it[[2, 1, pl]] === Infinity, Nothing, it[[1]] -> it[[2, 1, pl]] - it[[3, pl]]], {it, items}];
+      s = Min[Values[shifts]];
+      r = shifts[g] - s;
+      A = Select[gens, Lookup[shifts, #, None] === s && ! MemberQ[own, #] &];
+      c = If[exact,
+        DecideBound[T, own, i, r, A, Kind[T, #] & /@ (Position[gens, #][[1, 1]] & /@ A),
+          FreeQ[rhoSyms, Alternatives @@ A],
+          AllTrue[A, FreeQ[lam[[Position[gens, #][[1, 1]]]], Alternatives @@ A] &],
+          AllTrue[A, FreeQ[lam[[Position[gens, #][[1, 1]]]], Alternatives @@ Complement[gens, own]] &],
+          rhoR, AllTrue[Complement[gens, own], MemberQ[A, #] &],
+          Function[names, InfConsts[T, g, pl, names]]],
+        None];
+      If[c === None, crit = None;
+        chain = r >= 1 && AnyTrue[A, Kind[T, Position[gens, #][[1, 1]]] === "prim" &]; Break[]];
+      If[crit === None, crit = c];
+      AppendTo[places, {s, r, vrem[[pl]]}],
+      {pl, Length[vrem]}];
+    {crit, eP, places, chain},
+    {i, Length[gens]}];
+  $analyses[key, "inf"] = out;
+  out];
+
+(* SpecialData[key, T, pp]: Algorithm 6 at the places over the special pp:
+   {criterion or None, s, r, e_P, branch}; the derivatives being defined over
+   F, a factor split off a constant-coefficient special shares the data of
+   its parent.                                                              *)
+SpecialData[key_, T_, pp_] := Module[{gens = T["gens"], q = T["q"], m = T["m"], parent, branch, own, vp, shifts, exact, vD, dk, pi, Dpi, sigPi, s, A, lam, rhoFree, mono, i, kd, crit, r},
+  If[KeyExistsQ[$analyses[key]["spec"], pp], Return[$analyses[key]["spec"][pp]]];
+  parent = Lookup[$analyses[key]["parent"], pp, None];
+  If[parent =!= None, $analyses[key, "spec", pp] = SpecialData[key, T, parent]; Return[$analyses[key]["spec"][pp]]];
+  branch = q =!= None && Vp[q, pp, gens] > 0;
+  own = Select[gens, ! FreeQ[pp, #] &];
+  vp[u_] := VP[u, pp, T, branch];
+  shifts = <||>; exact = ! branch;
+  Do[vD = vp[T["derivs"][[k]]];
+    If[vD =!= Infinity, shifts[gens[[k]]] = vD - vp[TScalar[T, gens[[k]]]]];
+    dk = T["derivs"][[k]];
+    If[q =!= None && dk[[1]] =!= 0 && dk[[2]] =!= 0 && Vp[dk[[1]], pp, gens] == Vp[dk[[2]], pp, gens], exact = False],
+    {k, Length[gens]}];
+  If[q =!= None, vD = vp[T["Dw"][[2]]]; If[vD =!= Infinity, shifts["y"] = vD - vp[TUnit[T, 1]]]];
+  pi = If[branch, TUnit[T, 1], TScalar[T, pp]];
+  Dpi = TowerD[T, pi];
+  sigPi = vp[Dpi] - vp[pi];
+  s = Min[Append[Values[shifts], sigPi]];
+  r = sigPi - s;
+  A = Select[gens, Lookup[shifts, #, None] === s && ! MemberQ[own, #] &];
+  lam = Table[LamCoeffs[T, k, None], {k, Length[gens]}];
+  rhoFree = ! branch && FreeQ[DeleteCases[Can /@ Dpi, 0], Alternatives @@ A];
+  mono = None;
+  If[Length[own] == 1,
+    i = Position[gens, own[[1]]][[1, 1]]; kd = Kind[T, i];
+    If[(kd === "exp" && Expand[pp - gens[[i]]] === 0) || (kd === "tan" && Expand[(pp - gens[[i]])^2 + 1] === 0), mono = i]];
+  crit = If[exact,
+    DecideBound[T, own, mono, r, A, Kind[T, Position[gens, #][[1, 1]]] & /@ A, rhoFree,
+      AllTrue[A, FreeQ[lam[[Position[gens, #][[1, 1]]]], Alternatives @@ A] &],
+      AllTrue[A, FreeQ[lam[[Position[gens, #][[1, 1]]]], Alternatives @@ Complement[gens, own]] &],
+      None, AllTrue[Complement[gens, own], MemberQ[A, #] &],
+      If[! branch && Length[own] == 1, Function[names, SpecialConsts[T, pp, Dpi, s, own[[1]], names]], Function[names, None]]],
+    None];
+  $analyses[key, "spec", pp] = {crit, s, r, If[branch, m, 1], branch};
+  $analyses[key]["spec"][pp]];
+
+(* PlaceBounds[key, T, rem, denv, unkLogs, retry, verbose]
+   Step 15 of Algorithm 4 by Algorithm 6: the exponent of every special
+   prime and the degree bound in every generator, from the shift of the
+   derivation at the places over sigma and over t_i = oo (Theorem 8.7,
+   Corollary 8.9); the classical guess, raised by the retry count, at the
+   places where Proposition 8.11 is silent.  Returns {bounds, exps (aligned
+   with unkLogs), proved}.                                                  *)
+PlaceBounds[key_, T_, rem_, denv0_, unkLogs_, retry_, verbose_] := Module[
+  {gens = T["gens"], q = T["q"], nc, crits = <||>, exps, denv = denv0, nb, db, bounds, inf, crit, eP, places, chain, b, g, s, r, parent, vg, i, branch},
+  nc = If[q === None, 1, T["n"]];
+  exps = Table[{crit, s, r, eP, branch} = SpecialData[key, T, pl[[1]]];
+    parent = Lookup[$analyses[key]["parent"], pl[[1]], None];
+    vg = VP[rem, If[parent === None, pl[[1]], parent], T, branch];         (* a lower bound at the factor *)
+    crits[{"s", pl[[1]]}] = crit;
+    If[crit =!= None, Ceiling[Max[0, s - vg + r]/eP], Max[0, -vg] + retry],
+    {pl, unkLogs}];
+  Do[denv *= unkLogs[[i, 1]]^exps[[i]], {i, Length[unkLogs]}];
+  nb = Numerator /@ rem[[1 ;; nc]]; db = (Denominator[#] denv) & /@ rem[[1 ;; nc]];
+  inf = InfData[key, T, rem];
+  bounds = ConstantArray[None, Length[gens]];
+  Do[g = gens[[i]];
+    {crit, eP, places, chain} = inf[[i]];
+    b = If[crit =!= None,
+      Exponent[denv, g] + Max[Ceiling[(Max[0, #[[1]] - #[[3]]] + #[[2]])/eP] & /@ places],
+      Max[Exponent[#, g] & /@ Join[nb, db]] + 2 + If[chain, Max[Prepend[bounds[[i + 1 ;;]], 0]], 0]];
+    bounds[[i]] = b; crits[{"g", g}] = crit,
+    {i, Length[gens], 1, -1}];
+  If[verbose, Print["  bounds: ", StringRiffle[Table[ToString[gens[[i]]] <> ": " <> ToString[bounds[[i]]] <> " [" <> ToString[crits[{"g", gens[[i]]}] /. None -> "guess"] <> "]", {i, Length[gens]}], ", "],
+    If[unkLogs === {}, "", ";  specials: " <> StringRiffle[Table["(" <> ToString[unkLogs[[i, 1]]] <> ")^" <> ToString[exps[[i]]] <> " [" <> ToString[crits[{"s", unkLogs[[i, 1]]}] /. None -> "guess"] <> "]", {i, Length[unkLogs]}], ", "]],
+    If[AllTrue[Values[crits], # =!= None &], "  (all proved)", "  (a guess is in play)"]]];
+  {bounds, exps, AllTrue[Values[crits], # =!= None &]}];
+
+(* VerifiedResidueFree[rem, T]: re-run the residue computation of Steps
+   7--13 on the residual (through iPIM with a trivial ansatz): it is verified
+   residue-free when the analysis finds nothing left to realise.           *)
+VerifiedResidueFree[rem_, T_] := Module[{key = Hash[{rem, T}], gens = T["gens"], q = T["q"], comps, den, ok, p, branch, eta, delta, special},
+  Catch[iPIM[rem, T, "Bounds" -> ConstantArray[0, Length[gens]], "Verbose" -> False], "PIM"];
+  ok = KeyExistsQ[$analyses, key] && $analyses[key]["detLogs"] === {} && $analyses[key]["rootLogs"] === {};
+  (* the analysis evaluates a deeper-than-critical pole at a normal prime
+     over the curve only for n = 1, D = d/dx (DeepResidues), and in a
+     transcendental tower only along a residue direction; a pole it passes
+     over in silence leaves the residual unverified *)
+  If[ok,
+    comps = DeleteCases[Can /@ TPad[T, rem], 0];
+    den = If[comps === {}, 1, PolynomialLCM @@ (Denominator /@ comps)];
+    Do[p = fac[[1]];
+      If[FreeQ[p, Alternatives @@ gens], Continue[]];
+      {branch, eta, delta, special} = ClassifyPrime[T, p];
+      If[special || VP[rem, p, T, branch] >= -delta, Continue[]];
+      If[q === None,
+        If[ResidueDir[T, p] === None, ok = False; Break[]],
+        If[! (Length[gens] == 1 && T["derivs"][[1]] === TUnit[T, 0] && delta == 1 && ! branch && PointsOver[T, p] =!= None), ok = False; Break[]]],
+      {fac, Rest[FactorList[den]]}]];
+  ok];
 
 
 (* ------------------------------------------ m >= 3: places at infinity, realisation, units *)
@@ -1326,7 +1894,10 @@ RationalQ[a_, vars_] := With[{e = Together[a]}, PolynomialQ[Numerator[e], vars] 
    Sin, Cos, Sinh, Cosh, Sec, Csc are not monomials and are rejected: rewrite
    them through Tan or Exp first.                                            *)
 GenHeads = {Log, Tan, Cot, Tanh, Coth, ArcTan, ArcCot, ArcTanh, ArcCoth,
-            ArcSin, ArcCos, ArcSinh, ArcCosh, ArcSec, ArcCsc, ArcSech, ArcCsch};
+            ArcSin, ArcCos, ArcSinh, ArcCosh, ArcSec, ArcCsc, ArcSech, ArcCsch, ProductLog};
+(* PMExp[a]: Exp[a] held unevaluated while the tower is built -- the kernel rewrites
+   Exp[c Log[x]] as x^c, which would undo the exponential generator of x^Sqrt[2], x^a, 2^x *)
+PMExp;
 (* inverse functions with a rational derivative:  D t = coef(a) D a *)
 InvRational = <|ArcTan -> Function[a, 1/(1 + a^2)], ArcCot -> Function[a, -1/(1 + a^2)],
                 ArcTanh -> Function[a, 1/(1 - a^2)], ArcCoth -> Function[a, 1/(1 - a^2)]|>;
@@ -1484,8 +2055,8 @@ BuildTower[integrand_, x_Symbol] := Module[
     canChange = gens === {x} && a === x && FreeQ[e1, x] && q === None;
     If[canChange,
       rr2 = Unique["r"];
-      basesS = ToPair[# /. s -> rr2, rr2, 1 - If[hyper, -1, 1] c^2] & /@ bases;   (* s^2 = 1 - c^2, or c^2 - 1 *)
-      outerS = ToPair[e2 /. s -> rr2, rr2, 1 - If[hyper, -1, 1] c^2];
+      basesS = ToPair[# /. s -> rr2, rr2, If[hyper, c^2 - 1, 1 - c^2]] & /@ bases;   (* s^2 = 1 - c^2, or c^2 - 1 *)
+      outerS = ToPair[e2 /. s -> rr2, rr2, If[hyper, c^2 - 1, 1 - c^2]];
       If[AllTrue[basesS, #[[2]] === 0 &] && outerS[[1]] === 0,
         uNew = Unique["u"];
         expr = (If[hyper, 1, -1] outerS[[2]] /. c -> uNew) /. Thread[ph -> (basesS[[All, 1]] /. c -> uNew)];
@@ -1517,20 +2088,22 @@ BuildTower[integrand_, x_Symbol] := Module[
       AppendTo[back, tn -> If[! hyper, Tan[a/2], Tanh[a/2]]]; record[tn, If[! hyper, Tan[a/2], Tanh[a/2]]]];
     AppendTo[gens, tn]; AppendTo[derivs, Dt];
     T = Tower[gens, derivs, q, m]];
-  (* general powers a^b with a non-rational exponent are Exp[b Log[a]] *)
-  expr = expr /. Power[b_, e_] /; ! FreeQ[e, x] && b =!= E && ! MatchQ[e, _Rational | _Integer] :> Exp[e Log[b]];
+  (* general powers a^b with a non-rational exponent are exp(b log a), held as PMExp[b Log[a]]:
+     an exponent involving x (x^x, 2^x), or a base involving x with a non-rational constant
+     exponent (x^Sqrt[2], x^a); Exp[b Log[a]] itself would evaluate back to a^b *)
+  expr = expr /. Power[b_, e_] /; b =!= E && ! MatchQ[e, _Rational | _Integer] && (! FreeQ[e, x] || ! FreeQ[b, x]) :> PMExp[e Log[b]];
   While[True,
     (* trigonometric families first: all Sin/Cos/Sec/Csc (or hyperbolic) of one argument together *)
     trigC = Cases[{expr}, (h_[a_] /; MemberQ[Join[TrigHeads, HypHeads], h]) /; RationalQ[a /. RadRules[q, Y, m], Join[gens, {Y}]] && ! FreeQ[a, Alternatives @@ Join[gens, {Y}]], Infinity];
     If[trigC =!= {},
       With[{c0 = First[SortBy[trigC, LeafCount]]}, trigStep[c0[[1]], MemberQ[HypHeads, Head[c0]]]];
       Continue[]];
-    cands = Cases[{expr}, ((h_[a_] /; MemberQ[GenHeads, h]) | Power[E, a_] | Power[a_, _Rational]) /;
+    cands = Cases[{expr}, ((h_[a_] /; MemberQ[GenHeads, h]) | Power[E, a_] | PMExp[a_] | Power[a_, _Rational]) /;
         RationalQ[a /. RadRules[q, Y, m], Join[gens, {Y}]] && ! FreeQ[a, Alternatives @@ Join[gens, {Y}]], Infinity];
     If[cands === {}, Break[]];
     c = First[SortBy[cands, LeafCount]];
     Switch[c,
-      Power[E, _] | (h_[_] /; MemberQ[GenHeads, h]),
+      Power[E, _] | PMExp[_] | (h_[_] /; MemberQ[GenHeads, h]),
         arg = c[[If[Head[c] === Power, 2, 1]]];
         ap = toTuple[arg];
         Da = TowerD[T, ap];
@@ -1566,9 +2139,10 @@ BuildTower[integrand_, x_Symbol] := Module[
           Cot,     Pscale[-(1 + tnew^2), Da],
           Tanh,    Pscale[1 - tnew^2, Da],
           Coth,    Pscale[1 - tnew^2, Da],
-          Power,   Pscale[tnew, Da]]];
-        AppendTo[back, tnew -> c];
-        record[tnew, c /. Y -> q^(1/m)];
+          ProductLog, TDiv[T, Pscale[tnew/(1 + tnew), Da], ap],          (* D W(a) = W Da / (a (1 + W)) *)
+          Power | PMExp, Pscale[tnew, Da]]];
+        AppendTo[back, tnew -> (c /. PMExp -> Exp)];
+        record[tnew, (c /. PMExp -> Exp) /. Y -> q^(1/m)];
         expr = expr /. c -> tnew,
       Power[_, _Rational],
         With[{nrm = rootNormalize[c[[1]], c[[2]]]},
@@ -1627,10 +2201,25 @@ BuildTower[integrand_, x_Symbol] := Module[
    With "Verify" -> True the surface result is differentiated and compared
    with the integrand numerically at three points; a mismatch prints a
    warning and still returns the result.                                     *)
-ParallelIntegrateMixed[integrand_, x_Symbol, opts : OptionsPattern[]] := Module[{bt, T, fpair, back, Y, res, surf, ok},
+(* VanishingDenominator[fpair, back, x]: a denominator of the pair that vanishes identically
+   once the tower identifies dependent generators (1/(ArcSinh[x] - Log[x + Sqrt[x^2 + 1]])):
+   zero at every rational point where it evaluates; the surface form, or None *)
+VanishingDenominator[fpair_, back_, x_] := Module[{den, vals, v},
+  Do[den = Denominator[Together[c]] //. back;
+    vals = {};
+    Do[v = Quiet[N[den /. x -> p, 30]];
+      If[NumericQ[v], AppendTo[vals, Abs[v]]], {p, {1/2, 2, 1/3, 3, 3/2, 1/5}}];
+    If[Length[vals] >= 2 && AllTrue[vals, # < 10^-25 &], Return[den, Module]],
+    {c, fpair}];
+  None];
+
+ParallelIntegrateMixed[integrand_, x_Symbol, opts : OptionsPattern[]] := Module[{bt, T, fpair, back, Y, res, surf, ok, den},
+  (* a tower that cannot be built is an honest {"failed", ...}, never $Failed *)
   bt = Catch[BuildTower[integrand, x], "build"];
-  If[bt === $Failed, Return[$Failed]];
+  If[bt === $Failed || ! ListQ[bt] || Length[bt] != 4, Return[{"failed", "tower construction failed", integrand}]];
   {T, fpair, back, Y} = bt;
+  den = VanishingDenominator[fpair, back, x];
+  If[den =!= None, Return[{"failed", "integrand undefined: a denominator vanishes identically (dependent generators)", den}]];
   If[OptionValue["Verbose"],
     Print["  tower: generators ", T["gens"], " with D = ", T["derivs"],
       If[T["q"] =!= None, ", y^" <> ToString[T["m"]] <> " = " <> ToString[T["q"], InputForm], ""]];
@@ -1650,8 +2239,25 @@ Options[ParallelIntegrateMixed] = {"Bounds" -> None, "Verbose" -> False, "Verify
    every special prime split into its linear factors over the algebraic
    closure (Theorem 6.1 describes the specials over Fbar; the integral of
    Sqrt[Tan[x]] needs distinct coefficients on the four factors of 1 + u^4). *)
-ParallelIntegrateMixed[f00_List, T0_Association, opts : OptionsPattern[]] := Module[
-  {f0 = f00, T = T0, r, split = OptionValue["SplitSpecials"], se, gq, isConic, isQuartic, res, T2, f2, back, r2, failedQ, g0, r0},
+(* TransConsts[exprs, gens]: the transcendental constants of the coefficient field -- the
+   symbols that are not generators (parameters a, b, ...), E, Pi and constant function
+   values (Log[2]); algebraic constants (radicals, Root objects, I) are not among them *)
+TransConsts[exprs_, gens_] := Union[Join[
+  Cases[exprs, s_Symbol /; ! NumericQ[s] && ! MemberQ[gens, s] && s =!= None, {0, Infinity}],
+  Cases[exprs, s_Symbol /; NumericQ[s], {0, Infinity}],
+  Cases[exprs, h_[args__] /; NumericQ[h[args]] && ! MatchQ[h, Power | Times | Plus | Complex | Rational | Root | AlgebraicNumber], {0, Infinity}]]];
+
+(* the pair-form entry point.  No non-elementarity certificate is issued when the coefficient
+   field has transcendental constants (parameters, E, Pi, Log[2]): the unit and S'-unit
+   searches are complete over a number field only *)
+ParallelIntegrateMixed[f00_List, T0_Association, opts : OptionsPattern[]] := Module[{trans, r},
+  trans = TransConsts[{f00, T0["derivs"], T0["q"]}, T0["gens"]];
+  r = iParallelIntegrateMixed[f00, T0, opts];
+  If[trans =!= {} && ListQ[r] && r[[1]] === "not elementary",
+    {"failed", "certificate withheld: transcendental constants in the coefficient field", trans, r}, r]];
+
+iParallelIntegrateMixed[f00_List, T0_Association, opts : OptionsPattern[ParallelIntegrateMixed]] := Module[
+  {f0 = f00, T = T0, r, split = OptionValue["SplitSpecials"], se, gq, isConic, isQuartic, res, T2, f2, back, r2, failedQ, g0, r0, rational},
   failedQ[rr_] := ListQ[rr] && MemberQ[{"failed", "needs torsion realisation (milestone iii)"}, rr[[1]]];
   (* 0. a single generator g over the curve with Dg = r(g) != 1 -- a flattened
         root (Lemma 3.2) or the parameter of a parametrised conic -- is rescaled
@@ -1668,31 +2274,45 @@ ParallelIntegrateMixed[f00_List, T0_Association, opts : OptionsPattern[]] := Mod
   isConic = T["m"] == 2 && gq =!= None && Exponent[T["q"], gq] == 2 && FreeQ[CoefficientList[T["q"], gq], Alternatives @@ T["gens"]];
   isQuartic = T["m"] == 2 && gq =!= None && Exponent[T["q"], gq] == 4 && FreeQ[CoefficientList[T["q"], gq], Alternatives @@ T["gens"]] &&
     MatchQ[Sqrt[Coefficient[T["q"], gq, 4]], _Integer | _Rational];
+  (* 0b. a conic radicand whose integrand has a pole prime of degree >= 2 in the curve
+         variable is parametrised away FIRST (through a rational point, else a point over a
+         quadratic field): the places over such a prime carry residues in nested radicals,
+         while the parametrised tower is transcendental over the constants; with rational
+         poles only the curve is analysed first, as in the flagship traces of Section 10 *)
+  If[isConic && OptionValue["Bounds"] === None && AlgPolesQ[f0, gq],
+    res = ConicToLine[T, f0];
+    If[res =!= None,
+      {T2, f2, back, rational} = res;
+      If[OptionValue["Verbose"], Print["  conic radicand: parametrised by ", back[[1, 1]], " = ", back[[1, 2]], "; the tower is now transcendental over Q(", back[[1, 1]], ")"]];
+      r2 = ParallelIntegrateMixed[f2, T2, "Verbose" -> OptionValue["Verbose"], "SplitSpecials" -> split];
+      (* a certificate from the parametrisation over a quadratic field is not returned: the
+         arithmetic over that field is not certified *)
+      If[! ListQ[r2], Return[r2 /. back, Module], If[r2[[1]] === "not elementary" && rational, Return[r2, Module]]]]];
   (* 1. the base run, with the tower specials over Q *)
   r = Catch[iPIM[f0, T, "SplitSpecials" -> (split === True), opts], "PIM"];
   (* 2. the exponents of tower specials absent from the denominator are a
         guessed input (Remark 9.1): retry with exponents 1 and 2 *)
-  Do[If[ListQ[r] && r[[1]] === "failed" && r[[2]] === "no solution within bounds" && OptionValue["Bounds"] === None,
+  Do[If[ListQ[r] && r[[1]] === "failed" && r[[2]] === "no solution within bounds" && MemberQ[r, "guess"] && OptionValue["Bounds"] === None,
       r = Catch[iPIM[f0, T, "SplitSpecials" -> (split === True), "SpecialExponent" -> se, opts], "PIM"]],
     {se, {1, 2}}];
   (* 3. a conic with a rational point: parametrise it away BEFORE any work
         over the algebraic closure -- on a genus-0 curve the S'-unit groups
         can have large rank, and the split-specials search over the curve
         produces nested-radical coefficients the linear algebra cannot digest *)
-  If[failedQ[r] && isConic && OptionValue["Bounds"] === None,
+  If[failedQ[r] && isConic && OptionValue["Bounds"] === None && ! AlgPolesQ[f0, gq],
     res = ConicToLine[T, f0];
     If[res =!= None,
-      {T2, f2, back} = res;
-      If[OptionValue["Verbose"], Print["  conic radicand: parametrised by ", back[[1, 1]], " = ", back[[1, 2]], "; the tower is now transcendental"]];
+      {T2, f2, back, rational} = res;
+      If[OptionValue["Verbose"], Print["  conic radicand: parametrised by ", back[[1, 1]], " = ", back[[1, 2]], "; the tower is now transcendental over Q(", back[[1, 1]], ")"]];
       r2 = ParallelIntegrateMixed[f2, T2, "Verbose" -> OptionValue["Verbose"], "SplitSpecials" -> split];
-      If[! ListQ[r2], Return[r2 /. back, Module], If[r2[[1]] === "not elementary", Return[r2, Module]]]]];
+      If[! ListQ[r2], Return[r2 /. back, Module], If[r2[[1]] === "not elementary" && rational, Return[r2, Module]]]]];
   (* 4. specials split over the algebraic closure, with the exponent retries of 2 *)
-  If[split === Automatic && ListQ[r] && r[[1]] === "failed" && r[[2]] === "no solution within bounds" && r[[-1]] === "splittable",
+  If[split === Automatic && ListQ[r] && r[[1]] === "failed" && r[[2]] === "no solution within bounds" && MemberQ[r, "splittable"],
     r = Catch[iPIM[f0, T, "SplitSpecials" -> True, opts], "PIM"];
-    Do[If[ListQ[r] && r[[1]] === "failed" && r[[2]] === "no solution within bounds" && OptionValue["Bounds"] === None,
+    Do[If[ListQ[r] && r[[1]] === "failed" && r[[2]] === "no solution within bounds" && MemberQ[r, "guess"] && OptionValue["Bounds"] === None,
         r = Catch[iPIM[f0, T, "SplitSpecials" -> True, "SpecialExponent" -> se, opts], "PIM"]],
       {se, {1, 2}}]];
-  r = If[ListQ[r] && r[[-1]] === "splittable", Most[r], r];
+  r = If[ListQ[r] && r[[1]] === "failed", DeleteCases[r, "splittable" | "guess"], r];
   (* 5. a quartic radicand that blocks realisation: change to the cubic model *)
   If[failedQ[r] && isQuartic && OptionValue["Bounds"] === None,
     {T2, f2, back} = QuarticToCubic[T, f0];
@@ -1877,10 +2497,63 @@ AnsatzSystem[T_, rem_, denv_, units_, unkLogs_, css_, monos_, gammas_, betas_, u
     {k, nrows}];
   If[! ok, Return[<|"sub" -> None, "neq" -> nrows|>]];
   resid = aug[[All, 1 ;; ncols]] . xs - aug[[All, ncols + 1]];
-  If[AnyTrue[resid, # =!= 0 &], Throw[{"failed", "internal: solution does not verify"}, "PIM"]];
+  (* with transcendental parameters in the coefficients the entries are rational functions
+     of the parameters, whose zero is not syntactic; over a number field Together is exact *)
+  If[AnyTrue[resid, Together[#] =!= 0 &], Throw[{"failed", "internal: solution does not verify"}, "PIM"]];
   sub = Thread[unks -> (back /@ xs)];
   <|"sub" -> sub, "neq" -> nrows|>];
 
+
+(* RootSumLogand[T, p, g, texpr, verbose]
+   The logarithmic part over a prime p of a transcendental tower (q = None) whose places
+   over p have Root-object coordinates rho_i (a cubic or quartic prime without roots in
+   radicals): the logands g - rho_i with coefficients T(rho_i), T = texpr the residue
+   expression, are kept as ONE RootSum over the roots of p (the Rothstein--Trager form),
+   and the residual is reduced by Dg Sum_i T(rho_i)/(g - rho_i), a rational function over
+   K that the kernel evaluates by symmetric functions.  Term-by-term arithmetic in the
+   splitting field of p (degree 24 for a generic quartic) was intractable.  Returns
+   {rootsum, contribution to the residual as a pair}, or None when the kernel leaves the
+   sum unevaluated (the terms are then realised one by one).                          *)
+RootSumLogand[T_, p_, g_, texpr_, verbose_] := Module[{zz, pf, S, Dg},
+  zz = Unique["z"];
+  pf = Function @@ {zz, p /. g -> zz};
+  S = Together[RootSum[pf, Function @@ {zz, (texpr /. g -> zz)/(g - zz)}]];
+  If[! FreeQ[S, RootSum], Return[None]];
+  Dg = TowerD[T, TScalar[T, g]][[1]];
+  If[verbose, Print["      logands ", g, " - z over the roots z of (", p, ") as one RootSum, coefficient ", texpr /. g -> Global`z]];
+  {RootSum[pf, Function @@ {zz, (texpr /. g -> zz) Log[g - zz]}], TPad[T, {Can[Dg S]}]}];
+
+(* GroupRootLogs[T, g, principal]
+   The entries {c, pc} of principal (logands log(pc) with coefficient c, from
+   ResidueClasses over a transcendental tower) whose coefficient is a Root object are
+   grouped by its polynomial F: the conjugate entries become one RootSum over the roots of
+   F (the Lazard--Rioboo--Trager form), with pc written as v(z, g) from the first
+   conjugate (the gcd is conjugation-invariant and Monic), and the residual is reduced by
+   Sum_{F(c)=0} c D v(c)/v(c), which the kernel evaluates over K.  Returns {the other
+   entries, the RootSums, their residual contributions as pairs}.                    *)
+GroupRootLogs[T_, g_, principal_] := Module[{plain, groups, rootLogs = {}, parts = {}, c1, pc1, zz, F, v, Dv, S, cl, an, ok},
+  If[T["q"] =!= None, Return[{principal, {}, {}}]];
+  plain = Select[principal, Head[#[[1]]] =!= Root &];
+  groups = Values[GroupBy[Select[principal, Head[#[[1]]] === Root &], #[[1, 1]] &]];
+  Do[{c1, pc1} = First[grp];
+    zz = Unique["z"];
+    F = Function @@ {zz, c1[[1]][zz]};
+    (* pc1 as v(z, g): its coefficients lie in Q(c1) (RootReduce may have written them as
+       Root objects of their own minimal polynomials); ToNumberField gives their coordinates *)
+    v = pc1 /. c1 -> zz;
+    If[! FreeQ[v, Root],
+      cl = CoefficientList[pc1, g]; ok = True;
+      v = Table[If[MatchQ[co, _Integer | _Rational], co,
+          an = Quiet[Check[ToNumberField[co, c1], $Failed]];
+          If[MatchQ[an, AlgebraicNumber[c1, _List]], an[[2]] . zz^Range[0, Length[an[[2]]] - 1], ok = False; 0]], {co, cl}] . g^Range[0, Length[cl] - 1];
+      If[! ok, plain = Join[plain, grp]; Continue[]]];
+    Dv = TowerD[T, TScalar[T, v]][[1]];
+    S = Together[RootSum[F, Function @@ {zz, zz Dv/v}]];
+    If[! FreeQ[S, RootSum], plain = Join[plain, grp]; Continue[]];
+    AppendTo[rootLogs, RootSum[F, Function @@ {zz, zz Log[v]}]];
+    AppendTo[parts, TPad[T, {S}]],
+    {grp, groups}];
+  {plain, rootLogs, parts}];
 
 (* iPIM[f, T, opts]
    The body of ParallelIntegrateMixed; ParallelIntegrateMixed wraps it in
@@ -1896,10 +2569,10 @@ AnsatzSystem[T_, rem_, denv_, units_, unkLogs_, css_, monos_, gammas_, betas_, u
                 is the linear system.                                        *)
 iPIM[f0_, T_, OptionsPattern[ParallelIntegrateMixed]] := Module[
   {gens = T["gens"], q = T["q"], m = T["m"], nc, css, verbose = OptionValue["Verbose"], bounds = OptionValue["Bounds"],
-   Y, f, dlcm, detLogs = {}, unkLogs = {}, denv = 1, fl, p, mult, branch, eta, delta, special,
+   Y, f, dlcm, detLogs = {}, unkLogs = {}, rootLogs = {}, pfParts = {}, grp3, denv = 1, fl, p, mult, branch, eta, delta, special,
    eP, vP, Dp, tp, texpr, pts, taus, cert, done, seen, cand, rem, ld, nb, db, monos, cs0, cs1,
    V, EE, betas, eqs, unks, sol, sub, frees, y, surf, I0, split = OptionValue["SplitSpecials"], splittable, newLogs, PP, rts, torsion = {}, got, tinf, lower, nonconst, units = {}, unitsComplete = True, uu0, certd, gammas, B, r2, g0, sunits, sols, uuS, sexp = OptionValue["SpecialExponent"], gstar, a2, b2, c2, disc, s2, s, ok, pend, uu, tv,
-   pendingClasses = {}, rc, gDir, classes, principal, groups, found, unrealised, sysK, neq, A, key, unitsBase, sunitsAll, spec, tau, cv, tauHi},
+   pendingClasses = {}, rc, gDir, classes, principal, groups, found, unrealised, sysK, neq, A, key, unitsBase, sunitsAll, spec, tau, cv, tauHi, exps, proved = False, curve, typeE, T0, Dp0, infd},
   Y = Unique["y"];
   nc = If[q === None, 1, T["n"]];                      (* coordinates carrying the integrand *)
   f = TPad[T, f0]; f = Table[If[i > nc, 0, Can[f[[i]]]], {i, T["n"]}];
@@ -1925,8 +2598,8 @@ iPIM[f0_, T_, OptionsPattern[ParallelIntegrateMixed]] := Module[
     eP = If[branch, m, 1];
     vP = VP[f, p, T, branch];
     If[special,
-      denv *= p^mult; AppendTo[unkLogs, {p, 0}];
-      If[verbose, Print["  (", p, "): special; s-part ", p, "^", mult, ", candidate log(", p, ")"]];
+      AppendTo[unkLogs, {p, 0}];
+      If[verbose, Print["  (", p, "): special (multiplicity ", mult, "); candidate log(", p, ")"]];
       Continue[]];
     If[verbose, Print["  (", p, "): ", If[branch, "branch", "unramified"], ", delta = ", delta,
         ", v_P(f) = ", vP, If[vP > -delta, "  [sub-critical]", ""]]];
@@ -1961,13 +2634,31 @@ iPIM[f0_, T_, OptionsPattern[ParallelIntegrateMixed]] := Module[
           If[AnyTrue[taus, # =!= 0 &],
             got = If[m == 2, RealisePoints[T, p, pts, taus, Y, verbose], RealiseAtPoints[T, p, pts, taus, verbose]];
             If[got === None, AppendTo[torsion, {p, pts, taus}], detLogs = Join[detLogs, got]]]]]]];
+    If[branch && vP <= -delta && m == 2,
+      (* a critical or deeper pole at a branch place P over p (m = 2): with x - x0 = tau^2
+         the coordinate f0 has even powers of tau, y and dx odd ones, so f dx has residue
+         2 res_p(f0) at P and f1 y contributes nothing: the logarithmic part at p is that
+         of the rational function f0, log(x - x_i) with coefficient res_{x_i}(f0) (Trager;
+         the remark on branch primes in Part II), computed by ResidueClasses on the
+         transcendental copy of the tower *)
+      If[AnyTrue[T["derivs"], AnyTrue[Rest[#], # =!= 0 &] &],
+        Throw[{"failed", "critical pole at a branch place with a derivative through y", p}, "PIM"]];
+      T0 = Tower[gens, {#[[1]], 0} & /@ T["derivs"], None];
+      Dp0 = TowerD[T0, TScalar[T0, p]][[1]];
+      rc = ResidueClasses[T0, p, {Can[f[[1]] p/Dp0], 0}, Y, verbose];
+      If[rc === None, Throw[{"failed", "residue at a branch place: no constant-coefficient direction", p}, "PIM"]];
+      If[StringQ[rc[[1]]], Throw[rc, "PIM"]];
+      grp3 = GroupRootLogs[T0, rc[[1]], rc[[3]]];
+      Do[AppendTo[detLogs, {pr[[1]], TScalar[T, pr[[2]]]}], {pr, grp3[[1]]}];
+      rootLogs = Join[rootLogs, grp3[[2]]]; pfParts = Join[pfParts, grp3[[3]]];
+      Continue[]];
     If[vP == -delta || tauHi =!= None,
       (* tau_P = e (f h / Dh)|_P with h = p, or the canonical residue of the deeper pole *)
       If[tauHi =!= None, tp = {tauHi, 0}; texpr = tauHi,
         Dp = TowerD[T, TScalar[T, p]];
         tp = If[q =!= None, TDiv[T, Pscale[eP p, f], Dp], {Can[eP p f[[1]]/Dp[[1]]], 0}];
         texpr = ToY[T, tp, Y]];
-      If[branch, Throw[{"failed", "critical branch residue", p}, "PIM"]];
+      If[branch, Throw[{"failed", "critical pole at a branch place of a radical of degree", m, p}, "PIM"]];   (* m >= 3: left to the ansatz *)
       pts = PointsOver[T, p];
       (* a prime of degree > 4, and every constant-coefficient prime when
          m >= 3: residues in the residue field K[g]/(p) (no roots), the
@@ -1980,7 +2671,9 @@ iPIM[f0_, T_, OptionsPattern[ParallelIntegrateMixed]] := Module[
           Throw[rc, "PIM"]];
         If[! StringQ[rc[[1]]],
           {gDir, classes, principal} = rc;
-          Do[AppendTo[detLogs, {pr[[1]], TScalar[T, pr[[2]]]}], {pr, principal}];
+          grp3 = GroupRootLogs[T, gDir, principal];
+          Do[AppendTo[detLogs, {pr[[1]], TScalar[T, pr[[2]]]}], {pr, grp3[[1]]}];
+          rootLogs = Join[rootLogs, grp3[[2]]]; pfParts = Join[pfParts, grp3[[3]]];
           Do[got = RealiseClassAny[T, gDir, {{cl[[2]], cl[[3]]}}, cl[[1]], 12, verbose];
             If[got === None, AppendTo[pendingClasses, {cl[[1]], gDir, cl[[2]], cl[[3]]}], AppendTo[detLogs, got]],
             {cl, classes}];
@@ -1997,6 +2690,10 @@ iPIM[f0_, T_, OptionsPattern[ParallelIntegrateMixed]] := Module[
       If[AllTrue[taus, Simplify[# - taus[[1]]] === 0 &],
         If[taus[[1]] =!= 0, AppendTo[detLogs, {taus[[1]], TScalar[T, p]}]];
         Continue[]];
+      (* conjugate places with Root-object coordinates: one RootSum logand *)
+      If[q === None && (AnyTrue[pts, Head[#[[2]]] === Root &] || AnyTrue[taus, Head[#] === Root &]),
+        got = RootSumLogand[T, p, pts[[1, 1]], texpr, verbose];
+        If[got =!= None, AppendTo[rootLogs, got[[1]]]; AppendTo[pfParts, got[[2]]]; Continue[]]];
       If[q =!= None && m >= 3,
         got = RealiseAtPoints[T, p, pts, taus, verbose];
         If[got === None, AppendTo[torsion, {p, pts, taus}], detLogs = Join[detLogs, got]];
@@ -2048,7 +2745,14 @@ iPIM[f0_, T_, OptionsPattern[ParallelIntegrateMixed]] := Module[
      torsion on a cubic model (Algorithm 3(d)) *)
   If[torsion =!= {} && m == 2,
     got = TorsionRealise[T, torsion, Y, 24, verbose];
-    If[got =!= None, detLogs = Join[detLogs, got]; torsion = {}]];
+    If[got =!= None, detLogs = Join[detLogs, got]; torsion = {},
+      (* ... or not realisable at all: a component of the divisor that is
+         provably non-torsion (Proposition 9.4 by reduction mod p) is a
+         certificate of non-elementarity (Corollary 7.6) *)
+      infd = InfDivisorData[T, f, detLogs, SelectFirst[gens, ! FreeQ[q, #] &]];
+      If[infd === "unknown" && verbose, Print["  mod-p certificate withheld: the residues of f dx at the places over infinity are not available"]];
+      certd = If[infd === "unknown", None, NontorsionDivisor[T, torsion, verbose, infd]];
+      If[certd =!= None, Throw[{"not elementary", "residue divisor not torsion: reduction mod p", certd[[1]], certd[[2]]}, "PIM"]]]];
   If[torsion =!= {}, Throw[{"needs torsion realisation (milestone iii)", {#[[1]], #[[3]]} & /@ torsion}, "PIM"]];
 
   (* residue at the hypertangent place at infinity (Lemma 8.1) *)
@@ -2107,12 +2811,13 @@ iPIM[f0_, T_, OptionsPattern[ParallelIntegrateMixed]] := Module[
   Do[ld = If[q =!= None, TDiv[T, TowerD[T, u[[2]]], u[[2]]], {Can[TowerD[T, u[[2]]][[1]]/u[[2, 1]]], 0}];
     rem = Padd[rem, Pscale[-u[[1]], ld]],
     {u, detLogs}];
+  Do[rem = Padd[rem, Pscale[-1, pf]], {pf, pfParts}];                (* the RootSum logands *)
 
-    A = <|"f" -> f, "Y" -> Y, "detLogs" -> detLogs, "unkLogs" -> unkLogs, "denv" -> denv, "unitsBase" -> unitsBase,
-          "unitsComplete" -> unitsComplete, "rem" -> rem, "splittable" -> splittable, "specials" -> <||>|>;
+    A = <|"f" -> f, "Y" -> Y, "detLogs" -> detLogs, "rootLogs" -> rootLogs, "unkLogs" -> unkLogs, "denv" -> denv, "unitsBase" -> unitsBase,
+          "unitsComplete" -> unitsComplete, "rem" -> rem, "splittable" -> splittable, "specials" -> <||>, "spec" -> <||>, "parent" -> <||>|>;
     $analyses[key] = A];
-  {f, Y, detLogs, unkLogs, denv, unitsBase, unitsComplete, rem, splittable} =
-    Lookup[A, {"f", "Y", "detLogs", "unkLogs", "denv", "unitsBase", "unitsComplete", "rem", "splittable"}];
+  {f, Y, detLogs, rootLogs, unkLogs, denv, unitsBase, unitsComplete, rem, splittable} =
+    Lookup[A, {"f", "Y", "detLogs", "rootLogs", "unkLogs", "denv", "unitsBase", "unitsComplete", "rem", "splittable"}];
 
   (* Steps 5--6 for the specials over Q or over Fbar: the special logands and
      the S'-units over them, once per variant *)
@@ -2125,7 +2830,7 @@ iPIM[f0_, T_, OptionsPattern[ParallelIntegrateMixed]] := Module[
       gstar = SelectFirst[gens, PolynomialQ[PP, #] && Exponent[PP, #] >= 2 && FreeQ[CoefficientList[PP, #], Alternatives @@ gens] &, None];
       If[gstar === None, AppendTo[newLogs, pl],
         rts = RR /@ (gstar /. Solve[PP == 0, gstar]);          (* canonical algebraic numbers *)
-        Do[AppendTo[newLogs, {gstar - r, 0}], {r, rts}]],
+        Do[AppendTo[newLogs, {gstar - r, 0}]; $analyses[key, "parent", gstar - r] = PP, {r, rts}]],
       {pl, unkLogs}];
     unkLogs = newLogs;
     If[verbose, Print["  specials split over Fbar: ", unkLogs[[All, 1]]]]];
@@ -2173,19 +2878,14 @@ iPIM[f0_, T_, OptionsPattern[ParallelIntegrateMixed]] := Module[
     {unkLogs, sunitsAll} = spec];
   units = Join[sunitsAll, unitsBase];
 
-  (* special s-part: tower specials absent from the denominator, with the
-     guessed exponent of the current retry *)
-  If[sexp > 0,
-    (* raised for every tower special, present in the denominator or not: the
-       multiplicity of a special in D_v is not bounded by its multiplicity in
-       the integrand (there is no valuation lemma at a special) *)
-    Do[denv *= pl[[1]]^sexp, {pl, unkLogs}];
-    If[verbose, Print["  special s-part with exponent ", sexp, ": D_v = ", denv]]];
-
-  (* ansatz: degree bound max degree + 2 in each generator (top variable: Theorem 8.2) *)
+  (* Step 15 by Algorithm 6: the special exponents and the degree bounds from
+     the shift of the derivation at every place, proved where Proposition
+     8.11 applies, the classical guess raised by the retry count elsewhere *)
   If[bounds === None,
-    nb = Numerator /@ rem; db = (Denominator[#] denv) & /@ rem;
-    bounds = Table[Max[Exponent[#, g] & /@ Join[nb, db]] + 2, {g, gens}]];
+    {bounds, exps, proved} = PlaceBounds[key, T, rem, denv, unkLogs, sexp, verbose],
+    proved = False;
+    exps = Table[Max[0, -VP[rem, pl[[1]], T, q =!= None && Vp[q, pl[[1]], gens] > 0]] + sexp, {pl, unkLogs}]];
+  Do[denv *= unkLogs[[i, 1]]^exps[[i]], {i, Length[unkLogs]}];
   monos = Tuples[Range[0, #] & /@ bounds];
   (* one family of coefficients per coordinate: c0[...], c1[...] for m <= 2 *)
   css = Table[cc[i - 1] @@@ monos, {i, nc}];
@@ -2221,20 +2921,22 @@ iPIM[f0_, T_, OptionsPattern[ParallelIntegrateMixed]] := Module[
     Length[gammas], " unit/S'-unit logs, ", Length[betas], " special logs), ", neq, " equations; ",
     If[sol === {}, "no solution", "solved"]]];
   If[sol === {},
-    g0 = gens[[1]];
-    (* Proposition 9.2(b): n = 1, D = d/dx, no guessed input, unit group known,
-       residual verified residue-free -> exact bounds of Part I decide *)
-    If[OptionValue["Bounds"] === None && q =!= None && m == 2 && Length[gens] == 1 && FreeQ[q, Alternatives @@ Rest[gens]]
-        && unkLogs === {} && unitsComplete && T["derivs"][[1]] === {1, 0} && ResidueFree[T, rem, Y],
-      B = ExactBounds[T, f];
-      If[verbose, Print["  retrying with the exact degree bounds of Part I: ", B]];
-      r2 = Catch[iPIM[f0, T, "Bounds" -> {Max[B]}, "Verbose" -> False, "SplitSpecials" -> split], "PIM"];
-      If[ListQ[r2] && r2[[1]] === "failed",
-        Throw[{"not elementary", "holomorphic remainder: residual second-kind differential is not exact (exact bounds of Part I)", B}, "PIM"]];
-      Throw[r2, "PIM"]];
-    Throw[If[splittable && split =!= True,
-      {"failed", "no solution within bounds", bounds, "splittable"},
-      {"failed", "no solution within bounds", bounds}], "PIM"]];
+    (* Proposition 9.2(b): every bound in force is proved, the logand
+       candidates are complete -- the unit group known (or, variant (b'), no
+       logand can occur at all: the residual has zero residue at every place
+       over infinity too), the specials split over Fbar, none of them over the
+       curve variable, where the S'-units are only searched within a bound --
+       and the residual VERIFIED residue-free: the inconsistent system shows
+       the residual to be a non-exact differential of the second kind (the
+       holomorphic remainder) *)
+    curve = Select[gens, ! FreeQ[q, #] &];
+    typeE = q =!= None && AnyTrue[unkLogs, FreeQ[#[[1]], Alternatives @@ Complement[gens, curve]] &];
+    If[OptionValue["Bounds"] === None && proved && ! typeE && ! (splittable && split =!= True) &&
+        (unitsComplete || SecondKindAtInfinityQ[T, rem]) &&
+        If[Length[gens] == 1 && q =!= None && m == 2 && T["derivs"][[1]] === {1, 0}, ResidueFree[T, rem, Y], VerifiedResidueFree[rem, T]],
+      Throw[{"not elementary", "holomorphic remainder: residual second-kind differential is not exact (every bound in force is proved)", bounds}, "PIM"]];
+    Throw[Join[{"failed", "no solution within bounds", bounds},
+      If[splittable && split =!= True, {"splittable"}, {}], If[! proved, {"guess"}, {}]], "PIM"]];
   sub = First[sol];
   If[sysK === $Failed,
     frees = Complement[unks, sub[[All, 1]]];
@@ -2244,7 +2946,7 @@ iPIM[f0_, T_, OptionsPattern[ParallelIntegrateMixed]] := Module[
   y = If[q =!= None, q^(1/m), None];
   surf[u_] := If[q === None, u[[1]], Sum[TPad[T, u][[i + 1]] y^i/T["E"][[i + 1]], {i, 0, T["n"] - 1}]];
   I0 = surf[Can /@ (V /. sub)]
-       + Total[#[[1]] Log[surf[#[[2]]]] & /@ detLogs]
+       + Total[#[[1]] Log[surf[#[[2]]]] & /@ detLogs] + Total[rootLogs]
        + Total[Table[(gammas[[i]] /. sub) Log[surf[units[[i, 1]]]], {i, Length[units]}]]
        + Total[Table[(betas[[i]] /. sub) Log[unkLogs[[i, 1]]], {i, Length[unkLogs]}]];
   I0];

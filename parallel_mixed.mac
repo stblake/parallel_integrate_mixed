@@ -66,7 +66,8 @@ alg_atoms(exprs) := block([atoms: []],
     else if not atom(e) and member(op(e), ["+", "*", "/", "-"]) then map(alg_atoms_walk, args(e))
     else if pm_pow_parts(e) # false
       then (atoms: cons(pm_pow_base(e)^(1/denom(pm_pow_exp(e))), atoms), false)
-    else (atoms: cons(e, atoms), false),
+    else if e = %i then (atoms: cons(e, atoms), false)
+    else false,      /* a transcendental constant (%pi, %e, log 2, a parameter): not an atom of the number field */
   for e in exprs do alg_atoms_walk(e),
   unique(atoms))$
 
@@ -365,6 +366,25 @@ points_over(T, p) := block([res: false],
 
 /* is the expression a constant (free of every symbol)?  %i, %e, %pi count as constants */
 pm_constantp(e) := is(sublist(listofvars(e), lambda([v], not constantp(v))) = [])$
+
+/* ---- transcendental constants in the coefficient field: parameters a, b, ... (declared
+   constant while an integration runs), %pi, %e, log(2).  They stay kernels of the
+   rational-function arithmetic; the number-field layer (alg_atoms, kconv) ignores them;
+   no non-elementarity certificate is issued while they are present, because the unit
+   and S'-unit searches are complete over a number field only. */
+pm_param_values: [5/7, 11/13, 3/2, 7/3, 13/5, 17/11, 19/7, 23/13]$
+pm_param_rules: []$          /* parameter = sample value while integrate_surface runs (pm_numval) */
+/* the symbols of exprs that are neither generators nor constants */
+pm_params(exprs, gens) := sublist(unique(apply(append, map(listofvars, exprs))), lambda([v], symbolp(v) and not member(v, gens) and not constantp(v)))$
+pm_declare_params(ps) := for p in ps do apply('declare, [p, 'constant])$      /* declare quotes its arguments */
+pm_undeclare_params(ps) := for p in ps do apply('remove, [p, 'constant])$
+pm_param_sample(ps) := makelist(ps[k] = pm_param_values[1 + mod(k - 1, length(pm_param_values))], k, 1, length(ps))$
+/* the constant kernels of exprs that are not algebraic numbers */
+pm_trans_consts(exprs) := sublist(unique(apply(append, map(lambda([e], if e = 0 then [] else pm_kernels(e)), exprs))),
+  lambda([k], constantp(k) and not ratnump(k) and k # %i and pm_pow_parts(k) = false))$
+/* the value of an errcatch result after a cleanup form has run: the value, or the error
+   signalled again (Maxima has no unwind_protect at the user level) */
+pm_cleanup(caught, cleanup) := (ev(cleanup), if caught = [] then apply('error, error) else first(caught))$
 
 /* numeric zero test of a constant: |e| < 10^-20 at 30 digits; false when it cannot be
    evaluated */
@@ -794,6 +814,16 @@ rational_point(q, g) := block([res: false, g0, v, y0],
     if ratnump(v) and v >= 0 then (y0: sqrt(v), if ratnump(y0) then res: [g0, y0])),
   res)$
 
+/* a point [g0, sqrt(q(g0))] over the quadratic field Q(sqrt(q(g0))) when the conic has no
+   rational point (a small rational g0 with q(g0) # 0, a positive value preferred): the
+   parametrised tower is then transcendental over that number field, an isomorphic
+   function field, and the radical never enters the analysis */
+algebraic_point(q, g) := block([best: false, bv: false, v],
+  for g0 in [0, 1, -1, 2, -2, 1/2, -1/2, 3, -3] do (
+    v: canon(subst(g0, g, q)),
+    if ratnump(v) and v # 0 and (bv = false or (v > 0 and (bv < 0 or v < bv)) or (v < 0 and bv < 0 and -v < -bv)) then (best: [g0, sqrt(v)], bv: v)),
+  best)$
+
 /* ---------------------------------------------------------------- model changes */
 
 /* conic_to_line(T, f): rational parametrisation of a conic y^2 = q(g), deg q = 2,
@@ -802,10 +832,12 @@ rational_point(q, g) := block([res: false, g0, v, y0],
    so the curve disappears and the whole tower is rewritten over Q(w) (w replaces g at
    its position, q becomes false).  Returns [T', f', back] with back the substitution
    [[w, (y - y0)/(g - g0)]], or false without a rational point. */
-conic_to_line(T, f) := block([gens: T@gens, q: T@q, g, cc, q2, q1, q0, pt, g0, y0, w, Y: gensym("Y"), g_new, y_new, Dg, num, Dw, new_derivs, new_gens, T2, f2],
+conic_to_line(T, f) := block([gens: T@gens, q: T@q, g, cc, q2, q1, q0, pt, g0, y0, w, Y: gensym("Y"), g_new, y_new, Dg, num, Dw, new_derivs, new_gens, T2, f2, rational],
   g: first(sublist(gens, lambda([gg], free_of_all(sublist(gens, lambda([z], z # gg)), q)))),
   cc: poly_coeffs(q, g), q2: cc[1], q1: cc[2], q0: cc[3],
   pt: rational_point(q, g),
+  rational: is(pt # false),
+  if pt = false then pt: algebraic_point(q, g),
   if pt = false then return(false),
   g0: pt[1], y0: pt[2],
   w: concat('w_, g),
@@ -820,7 +852,7 @@ conic_to_line(T, f) := block([gens: T@gens, q: T@q, g, cc, q2, q1, q0, pt, g0, y
   new_gens: map(lambda([gg], if gg = g then w else gg), gens),
   T2: tower(new_gens, new_derivs, false),
   f2: ctl_conv(f),
-  [T2, f2, [[w, (sqrt(q) - y0)/(g - g0)]]])$
+  [T2, f2, [[w, (sqrt(q) - y0)/(g - g0)]], rational])$
 
 /* quartic_to_cubic(T, f): change of model for a quartic radicand q(g) with a square
    leading coefficient (two rational places at infinity): with p the polynomial part of
@@ -963,7 +995,7 @@ residue_expr(T, f, p, e_P) := block([Dp: tower_D(T, tower_scalar(T, p))],
 analyse(f, T, extension, verbose) := block(
   [gens: T@gens, q: T@q, m: T@m, nc, Y: gensym("y"), d: 1, det_logs: [], unk_logs: [], denv: 1, torsion: [],
    pending_classes: [], fl, ret: false, cls: [], tau_hi, pts, taus, cert, got, tp, texpr, rc, rem, units: [], units_complete: true,
-   uu, cert_data, seen, cand, tinf, lower, nonconst, groups, unrealised, cv],
+   uu, cert_data, seen, cand, tinf, lower, nonconst, groups, unrealised, cv, infd],
   an_classify(p) := block([c: assoc(p, cls)], if c = false then (c: classify(T, p), cls: cons([p, c], cls)), c),
   nc: if q # false then T@n else 1,
   f: tower_pad(T, f),
@@ -975,7 +1007,7 @@ analyse(f, T, extension, verbose) := block(
   f: makelist(if i <= nc then canon(f[i]) else 0, i, 1, T@n),
   for i thru nc do d: lcm(d, second(num_den(f[i]))),
   fl: if extension # false then factor_terms_ext(d, gens, extension) else factor_terms(d, gens),
-  for pm_ in fl while ret = false do block([p: pm_[1], mult: pm_[2], c, branch, et, delta, special, e_P, vP_, g_dir, tau, done: false],
+  for pm_ in fl while ret = false do block([p: pm_[1], mult: pm_[2], c, branch, et, delta, special, e_P, vP_, g_dir, tau, done: false, handled: false],
     if free_of_all(gens, p) then done: true
     else (
       c: an_classify(p), branch: c[1], et: c[2], delta: c[3], special: c[4],
@@ -1022,11 +1054,25 @@ analyse(f, T, extension, verbose) := block(
                    else realise_at_points(T, p, pts, taus, verbose),
               if got = false then torsion: endcons([p, pts, taus], torsion)
               else det_logs: append(det_logs, got))))),
-      if ret = false and (vP_ = -delta or tau_hi # false) then (
+      if ret = false and branch and m = 2 and vP_ <= -delta then (   /* a critical or deeper pole; a sub-critical one has f0 regular */
+        /* a branch place P over p (m = 2): with x - x0 = tau^2 the coordinate f0 has even
+           powers of tau, y and dx odd ones, so f dx has residue 2 res_p(f0) at P and f1 y
+           contributes nothing: the logarithmic part at p is that of the rational function
+           f0, log(x - x_i) with coefficient res_{x_i}(f0) (Trager) */
+        if some(lambda([d], some(lambda([c], c # 0), rest(d))), T@derivs) then
+          ret: ["failed", "critical pole at a branch place with a derivative through y", p]
+        else block([T0: tower(gens, map(lambda([d], [first(d), 0]), T@derivs)), Dp0, rc],
+          Dp0: first(tower_D(T0, tower_scalar(T0, p))),
+          rc: residue_classes(T0, p, [canon(f[1]*p/Dp0), 0], Y, verbose),
+          if rc = false then ret: ["failed", "residue at a branch place: no constant-coefficient direction", p]
+          else if listp(rc) and stringp(first(rc)) then ret: rc
+          else for cp in rc[3] do det_logs: endcons([cp[1], tower_scalar(T, cp[2])], det_logs)),
+        handled: true),
+      if ret = false and not handled and (vP_ = -delta or tau_hi # false) then (
         /* tau_P = e (f h / Dh)|_P with h = p, or the canonical residue of the deeper pole */
         if tau_hi # false then (tp: [tau_hi, 0], texpr: tau_hi)
         else (tp: residue_expr(T, f, p, e_P), texpr: tower_to_Y(T, tp, Y)),
-        if branch then error("critical branch residue"),
+        if branch then ret: ["failed", "critical pole at a branch place of a radical of degree", m, p],   /* m >= 3: left to the ansatz */
         pts: points_over(T, p),
         /* a prime of degree > 4, and every constant-coefficient prime when m >= 3:
            residues in the residue field K[g]/(p) (no roots), the residue classes as
@@ -1112,8 +1158,12 @@ analyse(f, T, extension, verbose) := block(
     if got = false then got: realise_joint(T, torsion, Y, verbose),
     if got # false then (det_logs: append(det_logs, got), torsion: [])
     else (
-      /* ... or not realisable at all: a provably non-torsion component (Proposition 9.4) */
-      cert_data: nontorsion_divisor(T, torsion, verbose),
+      /* ... or not realisable at all: a provably non-torsion component (Proposition 9.4),
+         when its completion at infinity is the one the certificate assumes */
+      infd: inf_divisor_data(T, f, det_logs, first(sublist(gens, lambda([gg], not freeof(gg, q))))),
+      cert_data: if infd = 'unknown then (
+          if verbose then printf(true, "  mod-p certificate withheld: the residues of f dx at the places over infinity are not available~%"), false)
+        else nontorsion_divisor(T, torsion, verbose, infd),
       if cert_data # false then return(append(["not elementary", "residue divisor not torsion: reduction mod p"], cert_data)))),
   if torsion # [] then return(["needs torsion realisation (Parts I--II, milestone iii)", map(lambda([tr], [tr[1], tr[3]]), torsion)]),
   /* residue at the hypertangent place at infinity (Lemma 8.1) */
@@ -1194,16 +1244,36 @@ pm_coeff_exp(t_, u) := block([r: rat(t_), lo], lo: ratp_lopow(ratnumer(r), u) - 
    place in the units of its uniformiser, and whether they are exact: [vals, exact].
    For m <= 2 exact (a series at the two unramified places when the two coordinates
    could cancel); for m >= 3 with g in q the Gauss lower bound of Part I, S6.1. */
-v_inf(T, u, g) := block([q: T@q, m: T@m, d, s_, e_, dp, vals, a, b, va, vb, vy, uu, qs, out: [], expr, ser, found],
+v_inf(T, u, g) := block([q: T@q, m: T@m, d, s_, e_, dp, vals, a, b, va, vb, vy, uu, qs, out: [], expr, ser, found, lo, tau, w],
   u: tower_pad(T, u),
   if q = false or freeof(g, q) then return([[lmin(map(lambda([c], ord_inf(c, g)), u))], true]),
   d: poly_degree(q, g),
   if m >= 3 then (
     s_: gcd(m, d), e_: m/s_, dp: d/s_,
+    /* the s places over g = oo have ramification e and ord(y) = -dp; term i of u on the
+       Trager basis has valuation e ord_oo(u_i) - i dp + e deg E_i (the Gauss bound of Part I,
+       S6.1), exact at every place when the minimal term is unique.  Otherwise the expansion
+       at the place: g = tau^-e, y = w tau^-dp qs(tau)^(1/m) with qs = q(tau^-e) tau^(d e) a
+       unit at 0 and w^m = 1; the s places are the classes w = zeta_m^j, j < s, of the m
+       sheets under tau -> zeta_e tau.  Exact when zeta_m is a radical (m | 12), else the
+       lower bound. */
     vals: [],
     for i: 0 thru m - 1 do if u[i + 1] # 0 then
       vals: endcons(e_*ord_inf(u[i + 1], g) - (i*dp - e_*(if (T@E)[i + 1] # 1 then poly_degree((T@E)[i + 1], g) else 0)), vals),
-    return([makelist(if vals = [] then inf else lmin(vals), j, 1, s_), false])),
+    if vals = [] then return([makelist(inf, j, 1, s_), true]),
+    lo: lmin(vals),
+    if length(sublist(vals, lambda([v], v = lo))) = 1 then return([makelist(lo, j, 1, s_), true]),
+    if mod(12, m) # 0 then return([makelist(lo, j, 1, s_), false]),
+    tau: gensym("tau"), w: gensym("w"),
+    qs: expand(subst(1/tau^e_, g, q)*tau^(d*e_)),
+    expr: sum(subst(1/tau^e_, g, u[i + 1])*w^i*tau^(-i*dp)*qs^(i/m)/subst(1/tau^e_, g, (T@E)[i + 1]), i, 0, m - 1),
+    out: [],
+    for j: 0 thru s_ - 1 do block([zj: kernel_normal(rectform(exp(2*%pi*%i*j/m))), found: false, ser],
+      for order in [lo + 4, lo + 12, lo + 30] while not found do (
+        ser: expand(ratdisrep(taylor(subst(zj, w, expr), tau, 0, order))),
+        if ser # 0 then (out: endcons(pm_low_exp(ser, tau), out), found: true)),
+      if not found then out: endcons(inf, out)),
+    return([out, true])),
   a: u[1], b: u[2],
   va: ord_inf(a, g), vb: ord_inf(b, g),
   if oddp(d) then return([[min(2*va, 2*vb - d)], true]),          /* ramified: parities differ */
@@ -1333,7 +1403,11 @@ decide(T, own, mono, s, shifts, sig_pi, lam, rho_free, rho_r, consts) := block(
     x: gens[1],
     if hermite_log_part(canon(rho_r), x) # 0 then return('K3)),
   upper: sublist(gens, lambda([gk], not member(gk, own))),
-  if r >= 1 and rho_free and own # [] and T@q # false and upper # [] and every(lambda([gk], member(gk, A_)), upper)
+  /* (K4) at a place whose own residue field is Fbar: a place of the curve, or x = oo of the
+     base F(x) with Dx = 1 (the same proof: kappa_v is a hyperexponential/hypertangent tower
+     over Fbar, and rho_v^(r) in Fbar* is not a derivative there) */
+  if r >= 1 and rho_free and own # [] and (T@q # false or (own = [gens[1]] and free_of_all(rest(gens), first((T@derivs)[1])) and every(lambda([c], c = 0), rest((T@derivs)[1]))))
+     and upper # [] and every(lambda([gk], member(gk, A_)), upper)
      and every(lambda([gk], member(assoc(gk, kinds), ['exp, 'tan])), upper)
      and every(lambda([gk], assoc(gk, lam) = []), upper)
      and length(sublist(upper, lambda([gk], assoc(gk, kinds) = 'exp))) <= 1 then return('K4),
@@ -1603,7 +1677,7 @@ kconv(F, e) := block([r: e, ks],
   if F@degree = 1 then return(e),
   for ac in F@coords do r: ratsubst(ac[2], ac[1], r),   /* subst misses a radical once a neighbour was replaced */
   r: ratsimp(r),
-  ks: sublist(pm_kernels(r), lambda([k], k # F@theta and not symbolp(k))),
+  ks: sublist(pm_kernels(r), lambda([k], k # F@theta and not symbolp(k) and not (constantp(k) and k # %i and pm_pow_parts(k) = false))),   /* transcendental constants stay kernels */
   if ks # [] then error("kconv: kernels outside the field survived the conversion:", ks, "of", e),
   r)$
 /* kback(F, a): theta replaced by its value in the atoms */
@@ -1718,22 +1792,36 @@ torsion_realise(T, pending, Y, bound, verbose) := block([g, q: T@q, places, cons
    constant coordinates): each component over a Q-basis of the residues is reduced
    modulo good primes and the orders of its class in the Jacobians compared.  Returns
    [data, divisor] for the first component certified non-torsion, else false. */
-nontorsion_divisor(T, pending, verbose) := block([g, q: T@q, places, consts, F, mu, pl, cert, dv, res: false],
+nontorsion_divisor(T, pending, verbose, infd) := block([g, q: T@q, places, consts, F, mu, pl, cert, dv, res: false, taus, extra, nfin, row, cplus, cminus, skip],
   g: pending[1][2][1][1],
   if not free_of_all(sublist(T@gens, lambda([z], z # g)), q) or some(lambda([pp], pp[2][1][1] # g), pending) then return(false),
   places: apply(append, map(lambda([pp], sublist(makelist([pp[2][i], pp[3][i]], i, 1, length(pp[2])), lambda([pt_tau], second(pt_tau) # 0))), pending)),
   consts: apply(append, map(lambda([pt_tau], [pt_tau[1][2], pt_tau[1][3], pt_tau[2]]), places)),
+  taus: map(second, places), nfin: length(taus),
+  /* the residues at the two places over infinity and the coefficients of the logands
+     already split off join the residues in the Q-basis decomposition (inf_divisor_data) */
+  extra: if infd = false then [] else append([infd[1], infd[2]], map(first, infd[3])),
+  consts: append(consts, extra),
   if some(lambda([z], not pm_constantp(z)), consts) or not const_coeffs_p(q, g, T@gens) then return(false),
   F: field_for(alg_atoms(consts)),
   mu: field_minpoly_list(F),
-  for bn in qbasis_divisors(F, map(second, places)) while res = false do (
-    pl: sublist(makelist([[qcoords(F, places[i][1][2]), qcoords(F, places[i][1][3])], bn[2][i]], i, 1, length(places)), lambda([z], second(z) # 0)),
-    cert: nontorsion_divisor_certificate(q, g, pl, mu, 2, 1000, 2*10^7),
-    if cert[1] then (
-      dv: pm_join(map(lambda([i], sconcat(bn[2][i], "*(", string(places[i][1][2]), ", ", string(places[i][1][3]), ")")),
-                      sublist(makelist(i, i, 1, length(places)), lambda([i], bn[2][i] # 0))), " + "),
-      if verbose then printf(true, "  the residue divisor ~a (coefficient ~a) is certified non-torsion by reduction mod p: ~a~%", dv, string(bn[1]), string(cert[2])),
-      res: [cert[2], dv])),
+  for bn in qbasis_divisors(F, append(taus, extra)) while res = false do (
+    row: bn[2], skip: false,
+    if every(lambda([i], row[i] = 0), makelist(i, i, 1, nfin)) then skip: true      /* a component supported at infinity only */
+    else if infd # false then (
+      cplus: row[nfin + 1] - sum(row[nfin + 2 + k]*infd[3][k][2], k, 1, length(infd[3])),
+      cminus: row[nfin + 2] - sum(row[nfin + 2 + k]*infd[3][k][3], k, 1, length(infd[3])),
+      if cplus # cminus then (
+        skip: true,
+        if verbose then printf(true, "  mod-p certificate withheld for the component with coefficient ~a: its completion at the places over ~a = oo is ~a oo_+ + ~a oo_-, not symmetric~%", string(bn[1]), string(g), cplus, cminus))),
+    if not skip then (
+      pl: sublist(makelist([[qcoords(F, places[i][1][2]), qcoords(F, places[i][1][3])], row[i]], i, 1, nfin), lambda([z], second(z) # 0)),
+      cert: nontorsion_divisor_certificate(q, g, pl, mu, 2, 1000, 2*10^7),
+      if cert[1] then (
+        dv: pm_join(map(lambda([i], sconcat(row[i], "*(", string(places[i][1][2]), ", ", string(places[i][1][3]), ")")),
+                        sublist(makelist(i, i, 1, nfin), lambda([i], row[i] # 0))), " + "),
+        if verbose then printf(true, "  the residue divisor ~a (coefficient ~a) is certified non-torsion by reduction mod p: ~a~%", dv, string(bn[1]), string(cert[2])),
+        res: [cert[2], dv]))),
   res)$
 
 /* ---------------------------------------------------------------- residues in the residue field */
@@ -2379,10 +2467,12 @@ pim(f, T, bounds, extension, verbose, split_specials, special_exp, model_changed
   splittable: some(lambda([pl], some(lambda([g], poly_degree(pl[1], g) >= 2), gens)), unk_logs),
   curve: sublist(gens, lambda([g], q # false and not freeof(g, q))),
   typeE: some(lambda([pl], q # false and free_of_all(sublist(gens, lambda([g], not member(g, curve))), pl[1])), unk_logs),
-  if bounds_given = false and proved and units_complete and not typeE and not (splittable and allow_split) then (
+  if bounds_given = false and proved and not typeE and not (splittable and allow_split)
+     and (units_complete or second_kind_at_infinity(T, rem)) then (
     /* Proposition 9.2(b): every bound in force is proved, the logand candidates are
-       complete, and the residual is VERIFIED residue-free: the inconsistent system shows
-       it to be a non-exact differential of the second kind (the holomorphic remainder) */
+       complete (or no logand can occur: the residual has zero residue at every place over
+       infinity too), and the residual is VERIFIED residue-free: the inconsistent system
+       shows it to be a non-exact differential of the second kind (the holomorphic remainder) */
     ok: if length(gens) = 1 and q # false and m = 2 and (T@derivs)[1] = [1, 0] then residue_free(T, rem, Y)
         else verified_residue_free(rem, T, extension),
     if ok then return(["not elementary", "holomorphic remainder: residual second-kind differential is not exact (every bound in force is proved)", bounds])),
@@ -2399,9 +2489,19 @@ pim(f, T, bounds, extension, verbose, split_specials, special_exp, model_changed
    tower specials over Q (and the exponent retries inside pim); a conic radicand with a
    rational point is parametrised away BEFORE any work over the algebraic closure;
    specials split over Fbar; a quartic radicand is moved to its cubic model. */
-parallel_integrate_mixed(f, T, [opts]) := block(
-  [bounds, extension, verbose, split_specials, special_exp, model_changed, split_first, g0, d0, r0, gq, const_q, is_conic, is_quartic, r, res, T2, f2, back, r2],
+parallel_integrate_mixed(f, T, [opts]) := block([params, trans, exprs, r],
   opts: if opts = [] then [] else first(opts),
+  exprs: append(f, apply(append, T@derivs), if T@q # false then [T@q] else []),
+  params: pm_params(exprs, T@gens),
+  pm_declare_params(params),
+  trans: append(params, pm_trans_consts(exprs)),
+  r: pm_cleanup(errcatch(pm_integrate_pair(f, T, opts)), pm_undeclare_params(params)),
+  if trans # [] and listp(r) and first(r) = "not elementary" then
+    ["failed", "certificate withheld: transcendental constants in the coefficient field", trans, r]
+  else r)$
+
+pm_integrate_pair(f, T, opts) := block(
+  [bounds, extension, verbose, split_specials, special_exp, model_changed, split_first, g0, d0, r0, gq, const_q, is_conic, is_quartic, r, res, T2, f2, back, r2],
   bounds: assoc('bounds, opts, false), extension: assoc('extension, opts, false),
   verbose: assoc('verbose, opts, false), split_specials: assoc('split_specials, opts, false),
   special_exp: assoc('special_exp, opts, 0), model_changed: assoc('model_changed, opts, false),
@@ -2419,18 +2519,34 @@ parallel_integrate_mixed(f, T, [opts]) := block(
   const_q: is(gq # [] and const_coeffs_p(T@q, first(gq), T@gens)),
   is_conic: is(T@m = 2 and const_q and poly_degree(T@q, first(gq)) = 2),
   is_quartic: is(T@m = 2 and const_q and poly_degree(T@q, first(gq)) = 4 and ratnump(sqrt(poly_lc(T@q, first(gq))))),
+  /* a conic radicand whose integrand has a pole prime of degree >= 2 in the curve variable
+     is parametrised away FIRST (through a rational point, else a point over a quadratic
+     field): the places over such a prime carry residues in nested radicals, while the
+     parametrised tower is transcendental over the constants; with rational poles only the
+     curve is analysed as in Part I (the flagship traces of Section 10) */
+  if is_conic and not model_changed and bounds = false and pm_alg_poles(f, first(gq)) then (
+    res: conic_to_line(T, f),
+    if res # false then (
+      T2: res[1], f2: res[2], back: res[3],
+      if verbose then printf(true, "  conic radicand: parametrised by ~a = ~a; the tower is now transcendental over Q(~a)~%",
+                             string(back[1][1]), string(back[1][2]), string(back[1][1])),
+      r2: parallel_integrate_mixed(f2, T2, ['extension = extension, 'verbose = verbose, 'model_changed = true]),
+      if not listp(r2) then return(pm_back_subst(r2, back)),
+      if first(r2) = "not elementary" and res[4] then return(r2))),   /* a certificate over Q(w) only: the arithmetic over a quadratic field is not certified */
   r: pim(f, T, bounds, extension, verbose, split_specials, special_exp, model_changed,
          split_first or not (is_conic and not model_changed), false),
   if not model_changed and pm_failed(r) and bounds = false then (
     if is_conic then (
-      res: conic_to_line(T, f),
-      if res # false then (
-        T2: res[1], f2: res[2], back: res[3],
-        if verbose then printf(true, "  conic radicand: parametrised by ~a = ~a; the tower is now transcendental over Q(~a)~%",
-                               string(back[1][1]), string(back[1][2]), string(back[1][1])),
-        r2: parallel_integrate_mixed(f2, T2, ['extension = extension, 'verbose = verbose, 'model_changed = true]),
-        if not listp(r2) then return(pm_back_subst(r2, back)),
-        if first(r2) = "not elementary" then return(r2)),
+      /* with rational poles only the curve was tried first: parametrise now */
+      if not pm_alg_poles(f, first(gq)) then (
+        res: conic_to_line(T, f),
+        if res # false then (
+          T2: res[1], f2: res[2], back: res[3],
+          if verbose then printf(true, "  conic radicand: parametrised by ~a = ~a; the tower is now transcendental over Q(~a)~%",
+                                 string(back[1][1]), string(back[1][2]), string(back[1][1])),
+          r2: parallel_integrate_mixed(f2, T2, ['extension = extension, 'verbose = verbose, 'model_changed = true]),
+          if not listp(r2) then return(pm_back_subst(r2, back)),
+          if first(r2) = "not elementary" and res[4] then return(r2))),
       /* no rational point, or the parametrised run failed: allow the split now */
       r: pim(f, T, bounds, extension, verbose, split_specials, special_exp, model_changed, true, false)),
     if pm_failed(r) and is_quartic then (
@@ -2444,6 +2560,78 @@ parallel_integrate_mixed(f, T, [opts]) := block(
   r)$
 
 pm_failed(r) := is(listp(r) and member(first(r), ["failed", "needs torsion realisation (Parts I--II, milestone iii)"]))$
+
+/* res_inf(T, f, g): the residues of the differential f dg at the two places over g = oo of
+   an even-degree model y^2 = q(g) (gens = [g], D g = 1), as constants [r_+, r_-]: with
+   u = 1/g, y = +-sqrt(q(1/u) u^d)/u^(d/2) on the two sheets and f dg = -f(1/u) du/u^2, the
+   residue is minus the coefficient of u in the Laurent expansion of f(1/u) */
+res_inf(T, f, g) := block([q: T@q, d, a, b, uu: gensym("u"), qs, out: [], expr, ser],
+  f: tower_pad(T, f), d: poly_degree(q, g), a: f[1], b: f[2],
+  qs: expand(subst(1/uu, g, q)*uu^d),
+  for sg in [1, -1] do (
+    expr: subst(1/uu, g, a) + sg*subst(1/uu, g, b)*sqrt(qs)/uu^(d/2),
+    ser: expand(ratdisrep(taylor(expr, uu, 0, 2))),
+    out: endcons(-ratcoef(ser, uu, 1), out)),
+  out)$
+
+/* res_inf_all(T, f, g): the residues of the differential f dg at the places over g = oo of
+   the curve y^m = q(g) (gens = [g]).  At a place of ramification e, g = tau^-e and
+   f dg = -e tau^(-e-1) f(tau) dtau, so the residue is -e times the coefficient of tau^e in
+   the expansion of f there (sheets and places as in v_inf: y = w tau^-dp qs^(1/m) with
+   w = zeta_m^j, j < s).  false when the expansion is not available (several places and
+   zeta_m not a radical, m not dividing 12). */
+res_inf_all(T, f, g) := block([q: T@q, m: T@m, d, s_, e_, dp, tau: gensym("tau"), w: gensym("w"), qs, expr, out: [], ser],
+  f: tower_pad(T, f), d: poly_degree(q, g),
+  s_: gcd(m, d), e_: m/s_, dp: d/s_,
+  if s_ > 1 and mod(12, m) # 0 then return(false),
+  qs: expand(subst(1/tau^e_, g, q)*tau^(d*e_)),
+  expr: sum(subst(1/tau^e_, g, f[i + 1])*w^i*tau^(-i*dp)*qs^(i/m)/subst(1/tau^e_, g, (T@E)[i + 1]), i, 0, m - 1),
+  for j: 0 thru s_ - 1 do (
+    ser: expand(ratdisrep(taylor(subst(kernel_normal(rectform(exp(2*%pi*%i*j/m))), w, expr), tau, 0, e_))),
+    out: endcons(kernel_normal(-e_*ratcoef(ser, tau, e_)), out)),
+  out)$
+
+/* second_kind_at_infinity(T, rem): the residual of a single-generator curve tower (D = d/dg)
+   has zero residue at every place over g = oo.  With zero residues at the finite places as
+   well (verified_residue_free), an elementary integral would have no logarithmic part at
+   all (its log coefficients would be the residues), so the ansatz for the algebraic part
+   with proved bounds decides: the unit group at infinity need not be known. */
+second_kind_at_infinity(T, rem) := block([gens: T@gens, dg, rr],
+  if length(gens) # 1 or T@q = false then return(false),
+  dg: (T@derivs)[1],
+  if not (first(dg) = 1 and every(lambda([c], c = 0), rest(dg))) then return(false),
+  rr: res_inf_all(T, rem, first(gens)),
+  is(rr # false and every(lambda([r], iszero(r)), rr)))$
+
+/* inf_divisor_data(T, f, det_logs, g): what the mod-p certificate needs at the places over
+   g = oo.  Proposition 9.4 completes the finite part of a residue-divisor component
+   symmetrically at the two places over g = oo of an even-degree model (a root of q is
+   moved to infinity mod p, and 2 R ~ oo_+ + oo_-); that is the true completion of a
+   component exactly when its coordinates at oo_+ and oo_- agree, the coordinate at oo_+-
+   being the residue r_+- of f dx there minus sum_i c_i ord_{oo_+-}(u_i) over the logands
+   u_i already split off with coefficients c_i.  Returns false when no condition is needed
+   (an odd-degree model: one place at infinity, the degree-0 completion is unique),
+   'unknown when r_+- cannot be computed (several generators and a pole of f dx at
+   infinity), else [r_+, r_-, [[c_i, ord_+(u_i), ord_-(u_i)], ...]]. */
+inf_divisor_data(T, f, det_logs, g) := block([d, gens: T@gens, dg, vi, vD, rr, orders: [], vu],
+  d: poly_degree(T@q, g),
+  if oddp(d) then return(false),
+  dg: (T@derivs)[pm_index(gens, g)],
+  if length(gens) = 1 and first(dg) # 0 and every(lambda([c], c = 0), rest(dg)) then
+    rr: res_inf(T, map(lambda([c], canon(c/first(dg))), tower_pad(T, f)), g)      /* f dx = (f/Dg) dg (Lemma 3.4) */
+  else (
+    vi: v_inf(T, f, g), vD: v_inf(T, dg, g),       /* dx = dg/Dg: v_P(f dx) = v_P(f) - 2 - v_P(Dg); no pole, no residue */
+    if second(vi) and second(vD) and length(first(vi)) = 2 and length(first(vD)) = 2
+       and every(lambda([k], first(vD)[k] # inf and pm_vge(first(vi)[k] - 2 - first(vD)[k], 0)), [1, 2]) then rr: [0, 0]
+    else return('unknown)),
+  for dl in det_logs do (
+    vu: v_inf(T, dl[2], g),
+    if not second(vu) or length(first(vu)) # 2 or some(lambda([v], v = inf), first(vu)) then return('unknown),
+    orders: endcons([dl[1], first(vu)[1], first(vu)[2]], orders)),
+  [rr[1], rr[2], orders])$
+
+/* does a denominator of the pair f have an irreducible factor of degree >= 2 in g? */
+pm_alg_poles(f, g) := some(lambda([c], c # 0 and some(lambda([fl], poly_degree(fl[1], g) >= 2), factor_terms(second(num_den(c)), [g]))), f)$
 
 /* apply the back rules [[old, new], ...] in order, as Python's subs on the list */
 pm_back_subst(e, back) := block([r: e], for on in back do r: subst(on[2], on[1], r), r)$

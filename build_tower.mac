@@ -14,8 +14,10 @@
    is built (Maxima simplifies %e^(b*log(a)) back to a^b); the helpers defined inside
    build_tower see its state by dynamic scoping (the nonlocal closures of the Python). */
 
-pm_gen_heads: [log, pm_exp, tan, cot, tanh, coth, atan, acot, atanh, acoth, asin, acos, asinh, acosh, asec, acsc, asech, acsch]$
+pm_gen_heads: [log, pm_exp, tan, cot, tanh, coth, atan, acot, atanh, acoth, asin, acos, asinh, acosh, asec, acsc, asech, acsch, lambert_w]$
 pm_debug_tower: false$      /* true: print the expression at every step of build_tower */
+/* pm_param_rules (parallel_mixed.mac): parameter = sample value, set by integrate_surface;
+   every numeric evaluation of the tower construction goes through pm_numval or these sublis */
 pm_trig: [sin, cos, sec, csc]$
 pm_hyp: [sinh, cosh, sech, csch]$
 /* inverse functions with a rational derivative: D t = coef(a) D a */
@@ -47,9 +49,11 @@ pm_replace(e, pred, fn) := if atom(e) then e
 pm_rebuild_op(e, newargs) := apply(op(e), newargs)$
 
 /* exponentials as the placeholder pm_exp: %e^a -> pm_exp(a); a^b with a non-rational
-   exponent involving x -> pm_exp(b log a) (general powers, e.g. x^x) */
+   exponent involving x -> pm_exp(b log a) (general powers, e.g. x^x, 2^x); a base involving
+   x with a non-rational constant exponent (x^sqrt(2), x^a) -> pm_exp(b log a) too */
 pm_exp_placeholders(e, x) := pm_replace(e,
-  lambda([z], not atom(z) and op(z) = "^" and (first(args(z)) = %e or (not ratnump(second(args(z))) and not freeof(x, second(args(z))) and not integerp(second(args(z)))))),
+  lambda([z], not atom(z) and op(z) = "^" and (first(args(z)) = %e or (not ratnump(second(args(z))) and not freeof(x, second(args(z))) and not integerp(second(args(z))))
+                                                or (not freeof(x, first(args(z))) and not ratnump(second(args(z))) and pm_constantp(second(args(z)))))),
   lambda([z], if first(args(z)) = %e then pm_exp(second(args(z))) else pm_exp(second(args(z))*log(first(args(z))))))$
 pm_exp_back(e) := subst(lambda([a], exp(a)), pm_exp, e)$
 
@@ -74,7 +78,7 @@ rad_rules(e, q, Y, m) := if q = false then e
 
 /* the numeric value of a constant expression at the sample rules: [re, im] or false */
 pm_numval(e, sample) := block([v],
-  v: errcatch(rectform(float(sublis(sample, e)))),
+  v: errcatch(rectform(float(sublis(append(pm_param_rules, sample), e)))),
   if v = [] then return(false),
   v: first(v),
   if not (numberp(realpart(v)) and numberp(imagpart(v))) then false else [float(realpart(v)), float(imagpart(v))])$
@@ -137,7 +141,7 @@ sample_point(expr, x) := block([rads, res: false, ok, v, hd],
 
 /* build_tower(integrand, x [, verbose]): [T, fpair, back] */
 build_tower(integrand, x, [rest]) := block(
-  [verbose, expr, gens, derivs, q: false, m: 2, Y: gensym("Y"), back: [], T, counter: 0, x0, sample: [], sym_, srf, vw, res, fpair, done],
+  [verbose, expr, gens, derivs, q: false, m: 2, Y: gensym("Y"), back: [], T, counter: 0, x0, sample: [], sym_, srf, vw, res, fpair, done, taken: listofvars(integrand)],
   verbose: if rest = [] then false else first(rest),
   expr: pm_exp_placeholders(integrand, x),
   gens: [x], derivs: [[1, 0]],
@@ -150,9 +154,11 @@ build_tower(integrand, x, [rest]) := block(
       v: pm_numval(pm_exp_back(srf), sample),
       if v # false and abs(v[2]) < 1.0e-12 then sample: endcons(sym_ = bfloat(v[1]), sample)),
     if q # false and not member(Y, map(lhs, sample)) and sample # [] then (
-      v: errcatch(bfloat(sublis(sample, q))^(1/m)),
+      v: errcatch(bfloat(sublis(append(pm_param_rules, sample), q))^(1/m)),
       if v # [] then sample: endcons(Y = first(v), sample))),
-  bt_new_sym(prefix) := (counter: counter + 1, concat(prefix, counter)),
+  /* a fresh name: a symbol of the integrand itself (a parameter t1, u1, ...) is never reused */
+  bt_new_sym(prefix) := block([s], counter: counter + 1, s: concat(prefix, counter),
+    while member(s, taken) do (counter: counter + 1, s: concat(prefix, counter)), s),
   bt_rebuild() := (T: tower(gens, derivs, q, m)),
   bt_is_cand_arg(a) := block([vars_: append(gens, [Y]), aa: rad_rules(a, q, Y, m)],
     rational_in(aa, vars_) and not free_of_all(vars_, aa)),
@@ -339,7 +345,7 @@ build_tower(integrand, x, [rest]) := block(
               if m > 2 then derivs: map(lambda([d], append(d, makelist(0, i, 1, m - 2))), derivs),
               expr: rad_rules(expr, q, Y, m),
               bt_rebuild(),
-              if sample # [] then (vw: errcatch(bfloat(sublis(sample, q))^(1/m)), if vw # [] then sample: endcons(Y = first(vw), sample)))))
+              if sample # [] then (vw: errcatch(bfloat(sublis(append(pm_param_rules, sample), q))^(1/m)), if vw # [] then sample: endcons(Y = first(vw), sample)))))
         else (
           /* transcendental generator */
           f0: cnd, a: first(args(f0)),
@@ -388,6 +394,7 @@ build_tower(integrand, x, [rest]) := block(
             else if head = tan then Dt: map(lambda([d], canon((1 + tn^2)*d)), Da)
             else if head = cot then Dt: map(lambda([d], canon(-(1 + tn^2)*d)), Da)
             else if member(head, [tanh, coth]) then Dt: map(lambda([d], canon((1 - tn^2)*d)), Da)
+            else if head = lambert_w then Dt: map(lambda([d], canon(tn*d/(1 + tn))), tower_div(T, Da, ap))   /* D W(a) = W Da/(a (1 + W)) */
             else error("unsupported generator", f0),
             gens: endcons(tn, gens), derivs: endcons(Dt, derivs),
             back: endcons([tn, pm_exp_back(f0)], back),
@@ -414,13 +421,39 @@ substitute_back(res, back) := block([new_],
   res)$
 
 /* the surface-form entry point: integrate an expression in x.  opts as for
-   parallel_integrate_mixed plus 'verify = true (numeric check of D(result) - integrand) */
-integrate_surface(integrand, x, [opts]) := block([verbose, verify, bt, T, fpair, back, res, surf, ok],
+   parallel_integrate_mixed plus 'verify = true (numeric check of D(result) - integrand).
+   The symbols of the integrand other than x are transcendental constants (parameters):
+   declared constant while the integration runs, with rational sample values for the
+   numeric guards (pm_param_rules, read by pm_numval); the number-field layer ignores
+   them (alg_atoms) and parallel_integrate_mixed withholds every non-elementarity
+   certificate over such a coefficient field.  A tower that cannot be built is an honest
+   ["failed", ...], never an error. */
+integrate_surface(integrand, x, [opts]) := block([verbose, verify, params],
   opts: if opts = [] then [] else first(opts),
   verbose: assoc('verbose, opts, false), verify: assoc('verify, opts, false),
-  bt: build_tower(integrand, x, verbose),
-  T: bt[1], fpair: bt[2], back: bt[3],
-  res: parallel_integrate_mixed(fpair, T, sublist(opts, lambda([o], lhs(o) # 'verify))),
+  params: pm_params([integrand], [x]),
+  pm_declare_params(params),
+  pm_param_rules: pm_param_sample(params),
+  pm_cleanup(errcatch(pm_integrate_surface(integrand, x, verbose, verify, sublist(opts, lambda([o], lhs(o) # 'verify)))),
+             (pm_undeclare_params(params), pm_param_rules: [])))$
+
+pm_integrate_surface(integrand, x, verbose, verify, opts) := block([bt, T, fpair, back, res, surf, ok, bad: false, den, vals, v],
+  bt: errcatch(build_tower(integrand, x, verbose)),
+  if bt = [] then return(["failed", "tower construction failed", error]),
+  bt: first(bt), T: bt[1], fpair: bt[2], back: bt[3],
+  /* a denominator that vanishes identically once the tower identifies dependent generators
+     (1/(asinh x - log(x + sqrt(x^2+1)))): zero at every rational point where it evaluates */
+  for c in fpair do (
+    den: substitute_back(denom(ratsimp(c)), back),
+    vals: [],
+    for p in [1/2, 2, 1/3, 3, 3/2, 1/5] do (
+      v: errcatch(block([fpprec: 30], cabs(rectform(bfloat(sublis(append(pm_param_rules, [x = p]), den)))))),
+      if v # [] and numberp(first(v)) then vals: endcons(first(v), vals)),
+    if length(vals) >= 2 and every(lambda([w], w < 1b-25), vals) then bad: den),
+  if bad # false then return(["failed", "integrand undefined: a denominator vanishes identically (dependent generators)", bad]),
+  res: errcatch(parallel_integrate_mixed(fpair, T, opts)),
+  if res = [] then return(["failed", "internal error", error]),     /* an honest failure carries the message; never a crash */
+  res: first(res),
   if listp(res) then return(map(lambda([r], if stringp(r) or listp(r) then r else substitute_back(r, back)), res)),
   surf: substitute_back(res, back),
   if verify then (

@@ -166,6 +166,23 @@ run("regression (not in paper): torus over the logarithmic tower", (S(5)/(2*x*t)
     Tower([x, t], [(1, 0), (1/x, 0)], q=qt), 'integral',
     surface=(4*sp.log(x)**3 + 3*sp.log(x) + 1 + 5*yt)/(2*x*sp.log(x)*yt),
     subs={t: sp.log(x)}, verbose=True)
+# the extended (K1): an attaining hyperexponential alongside a primitive with
+# r = 0 -- rho = -1, mu = sqrt 2 at x = oo and rho = 1, mu = sqrt 2 at the
+# special (x), Q-independent, so both bounds are proved (Prop. 8.11, Remark 8.14)
+t1e, t2e = sp.symbols('t1 t2')
+run("regression (extended K1): x^sqrt2 ((1 + sqrt2) log x + 1) on the log-exp tower t1 = log x, t2 = x^sqrt2",
+    (t2e*((1 + sp.sqrt(2))*t1e + 1), S(0)),
+    Tower([x, t1e, t2e], [(1, 0), (1/x, 0), (sp.sqrt(2)*t2e/x, 0)], q=None), 'integral',
+    surface=x**sp.sqrt(2)*((1 + sp.sqrt(2))*sp.log(x) + 1), subs={t1e: sp.log(x), t2e: x**sp.sqrt(2)}, verbose=True)
+
+# the residue divisor of Algorithm 3(d) left unrealised on a curve of genus 4
+# (y^2 = u^10 + 1, u = sqrt(cosh x)): residues +-sqrt2/8 at (+-1, +-sqrt2),
+# certified non-torsion by reduction mod 17 and 41 (orders 29 and 155),
+# Proposition 9.4 for divisors at finite places (example 10.20)
+ue = sp.Symbol('u', positive=True)
+run("regression (non-torsion residue divisor at finite places): u^17 y/((u^4-1)(u^10+1)^2) on y^2 = u^10 + 1, Du = 1/(2u)",
+    (S(0), ue**17/((ue**4 - 1)*(ue**10 + 1)**2)), Tower([ue], [(1/(2*ue), S(0))], q=ue**10 + 1),
+    'not elementary', verbose=True)
 
 
 # ==================================== pmint parity: the canonical residue in
@@ -225,7 +242,7 @@ run("R4 D[log(x)/(1+x^2) + arctan x] on {x, log x}: double pole at x^2+1, residu
     (sp.cancel(sp.diff(F4, x) + sp.diff(F4, t)/x), S(0)), Tower([x, t], [(1, 0), (1/x, 0)]), 'integral',
     surface=sp.diff(F4.subs(t, sp.log(x)), x), subs={t: sp.log(x)})
 T5, f5, back5 = build_tower(sp.log(x + sp.sqrt(x**2 - 1))/x**2, x)
-T5, f5, back5b = conic_to_line(T5, f5)
+T5, f5, back5b, _ = conic_to_line(T5, f5)
 run("R5 log(x+sqrt(x^2-1))/x^2 on the parametrised conic w = y/(x-1): residues -+i at w^2+1 from a double pole",
     f5, T5, 'integral', surface=sp.log(x + sp.sqrt(x**2 - 1))/x**2, subs=back5b + back5)
 
@@ -265,7 +282,7 @@ runS("S10 tan(x)/sqrt(1 + sec^3 x)  (odd in sin: u = cos x)", sp.tan(x)/sp.sqrt(
 runS("S11 tan(x) sqrt(1 + tan^4 x)  (radical over the tangent)", sp.tan(x)*sp.sqrt(1 + sp.tan(x)**4))
 runS("S12 sqrt(tan x)  (specials split over Fbar)", sp.sqrt(sp.tan(x)))
 runS("S13 sqrt(log x): not elementary, honest 'failed'", sp.sqrt(sp.log(x)), 'failed')
-runS("S14 exp(x^2): not elementary, honest 'failed'", sp.exp(x**2), 'failed')
+runS("S14 exp(x^2): not elementary  (K4 at x = oo: the hyperexponential shift is exact, bound proved, no solution)", sp.exp(x**2), 'not elementary')
 runS("S15 Bronstein (E) nested radical: not elementary",
      (sp.log(x) + sp.sqrt(sp.log(x) + sp.sqrt(sp.log(x))))/(1 + sp.log(x)), 'not elementary')
 runS("S16 sqrt(sin x)/(1 + sin^2 x)  (Charlwood A27: residues at the degree-8 prime in the residue field)",
@@ -277,6 +294,10 @@ runS("S18 sqrt(x + sqrt(1 - x^2)): not elementary  (nested radical over the coni
 runS("S19 sqrt(x) arcsin(sqrt(x+1))  (Euler parameter w = sqrt x + sqrt(x+1), no radical; real nowhere, the sign convention of x > 0)",
      sp.sqrt(x)*sp.asin(sp.sqrt(x + 1)))
 runS("S20 arcsin(sqrt(x+1))/sqrt x", sp.asin(sp.sqrt(x + 1))/sp.sqrt(x))
+runS("S21 coth(x)/(1+sech(x)^5)^(3/2): not elementary  (odd in sinh: u = cosh x, flattened root, genus 4; the residue divisor over u = +-1 is certified non-torsion by reduction mod 17, 41)",
+     sp.coth(x)/(1 + sp.sech(x)**5)**sp.Rational(3, 2), 'not elementary')
+runS("S22 sinh(x)^3  (odd in sinh: u = cosh x, sinh^2 = cosh^2 - 1)", sp.sinh(x)**3)
+runS("S23 coth(x) sqrt(cosh x)  (odd in sinh with 1/sinh; flattened root)", sp.coth(x)*sp.sqrt(sp.cosh(x)))
 
 # ================================================================ m >= 3
 # radicals of degree m >= 3 (elements on the Trager basis w_i = y^i/E_i):
@@ -295,7 +316,7 @@ runS("M5  1/(x (x^4+1)^(1/4))  (m = 4, residue classes over Q(i))",
      1/(x*(x**4 + 1)**sp.Rational(1, 4)))
 runS("M6  1/(x^4+1)^(1/4)  (m = 4, units at the four places at infinity)",
      1/(x**4 + 1)**sp.Rational(1, 4))
-runS("M7  x/(x^3-1)^(1/3): not elementary, honest 'failed'", x/(x**3 - 1)**sp.Rational(1, 3), 'failed')
+runS("M7  x/(x^3-1)^(1/3): not elementary  (three places at infinity: exact valuations there, zero residues everywhere, holomorphic remainder)", x/(x**3 - 1)**sp.Rational(1, 3), 'not elementary')
 
 # ================================================================ summary
 print("\n" + "=" * 78)

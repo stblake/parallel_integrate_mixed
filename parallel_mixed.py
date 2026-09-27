@@ -11,7 +11,10 @@ Pipeline (paper section numbers):
   classification of every denominator prime by Definition 4.4 computed
   generically -- eta_P on the generators and Dy (Lemma 4.3), uniformiser
   p (unramified) or y (branch), delta_P = 1 + eta_P (Theorem 4.6);
-  Hermite exponents and the special guess (Corollary 5.9); residues
+  Hermite exponents (Corollary 5.9), the special exponents and the degree
+  bounds from the shift of the derivation at every place (Algorithm 6,
+  Section 8.2: proved where Proposition 8.11 applies, the classical guess
+  raised on retry elsewhere); residues
   tau_P = e*(f h/Dh)|_P (Theorem 7.5) with curve splitting: linear
   primes split by sqrt(q mod p), quadratic primes split by y when
   disc = s^2 q (the norm identity N(2a g + b -+ s y) = 4a p realises
@@ -36,8 +39,12 @@ expansions there); unit candidates from a bounded divisor search at
 infinity (_units_general), which replaces the continued fraction of m = 2.
 
 Reported, not computed: realisation of unequal split residues at
-linear primes (torsion / norm search: Parts I--II, milestone iii);
-critical branch residues; for m >= 3: S'-units over special primes, residue
+linear primes beyond the norm search and the cubic-model torsion (Parts
+I--II, milestone iii) -- unless the residue divisor is certified
+non-torsion by reduction mod p (Proposition 9.4 by Cantor's algorithm in
+the Jacobian over GF(p), pell.nontorsion_divisor_certificate), which is a
+certificate of non-elementarity on a curve of any genus; critical branch
+residues; for m >= 3: S'-units over special primes, residue
 classes carried by several but not all sheets over one root, partially
 ramified branch primes (gcd(m, l_0) > 1), the non-torsion and
 holomorphic-remainder certificates (both m = 2 in the paper).
@@ -46,15 +53,14 @@ holomorphic-remainder certificates (both m = 2 in the paper).
 import sympy as sp
 
 from itertools import product as _iproduct
-from pell import fundamental_unit, nontorsion_certificate
+from pell import fundamental_unit, nontorsion_certificate, nontorsion_divisor_certificate
 try:                      # shared codebase with Parts I and III
     from weier import division_poly_order
-    from rnrad2 import RadicalField, exact_degree_bounds
-    import rnrad2 as _rn
     _HAVE_RN = True
 except Exception:         # pragma: no cover
     _HAVE_RN = False
 from sympy.polys.rings import ring as _ring
+from sympy.integrals.rationaltools import ratint as _ratint
 
 
 def _c_generic(e):
@@ -1393,6 +1399,35 @@ def _rational_point(q, g):
     return None
 
 
+def _algebraic_point(q, g):
+    """A point (g0, sqrt(q(g0))) over the quadratic field Q(sqrt(q(g0))) when the conic
+    has no rational point: a small rational g0 with q(g0) != 0, a positive value
+    preferred (the parametrised tower is then transcendental over that number field,
+    an isomorphic function field, and the radical never enters the analysis)."""
+    best, bv = None, None
+    for g0 in (0, 1, -1, 2, -2, sp.Rational(1, 2), -sp.Rational(1, 2), 3, -3):
+        v = sp.nsimplify(q.subs(g, g0))
+        if not v.is_Rational or v == 0:
+            continue
+        if bv is None or (v > 0 and (bv < 0 or v < bv)) or (v < 0 and bv < 0 and -v < -bv):
+            best, bv = (sp.Rational(g0), sp.sqrt(v)), v
+    return best
+
+
+def _alg_poles(f, g):
+    """does a denominator of the pair f have an irreducible factor of degree >= 2 in g?"""
+    for c in f:
+        if c == 0:
+            continue
+        try:
+            facs = sp.factor_list(sp.denom(sp.cancel(c)), g)[1]
+        except Exception:           # noqa: a coefficient domain factor_list cannot handle
+            return False
+        if any(sp.degree(fac, g) >= 2 for fac, _ in facs):
+            return True
+    return False
+
+
 def conic_to_line(T, f):
     """Rational parametrisation of a conic y^2 = q(g), deg q = 2, through a
     rational point (g0, y0): the pencil y = y0 + w (g - g0) meets the conic
@@ -1406,6 +1441,9 @@ def conic_to_line(T, f):
     P = sp.Poly(q, g)
     q2, q1, q0 = [P.coeff_monomial(g ** k) for k in (2, 1, 0)]
     pt = _rational_point(q, g)
+    rational = pt is not None
+    if pt is None:
+        pt = _algebraic_point(q, g)
     if pt is None:
         return None
     g0, y0 = pt
@@ -1424,7 +1462,7 @@ def conic_to_line(T, f):
     T2 = Tower(new_gens, new_derivs, q=None)
     f2 = conv(f)
     back = [(w, (sp.sqrt(q) - y0) / (g - g0))]
-    return T2, f2, back
+    return T2, f2, back, rational
 
 def quartic_to_cubic(T, f):
     """Change of model for a quartic radicand q(g) with a square leading
@@ -1481,6 +1519,23 @@ def _qcoords(conv, e):
     return [sp.QQ.to_sympy(a)]
 
 
+def _qbasis_divisors(conv, taus):
+    """The residues taus (constants of the field of conv) over a Q-basis of
+    their Q-span (Algorithm 3(d)): [(beta_j, ns_j)] with ns_j integer vectors
+    and tau_i = sum_j ns_j[i] beta_j, so that the divisor sum_i tau_i P_i is
+    sum_j beta_j D_j with D_j = sum_i ns_j[i] P_i; beta_j is the residue at
+    the j-th pivot divided by the common denominator of its row."""
+    rows = [_qcoords(conv, tau) for tau in taus]
+    d = max(len(r) for r in rows)
+    A = sp.Matrix([r + [0] * (d - len(r)) for r in rows]).T   # column i: the residue tau_i
+    Rr, piv = A.rref()                                        # A[:, i] = sum_j Rr[j, i] A[:, piv[j]]
+    out = []
+    for j, k in enumerate(piv):
+        N = sp.ilcm(1, *[z.q for z in Rr.row(j)])
+        out.append((taus[k] / N, [int(N * Rr[j, i]) for i in range(len(taus))]))
+    return out
+
+
 def _torsion_realise(T, pending, Y, bound=24, verbose=False):
     """Algorithm 3(d): the residue divisor of the pending primes
     [(p, pts, taus)] on an elliptic curve with one place at infinity (deg q
@@ -1527,24 +1582,157 @@ def _torsion_realise(T, pending, Y, bound=24, verbose=False):
             print(f"      torsion: [P - oo] of order {got[0]} at ({pt[1]}, {pt[2]}); "
                   f"Miller logand with coefficient {tau / got[0]}")
     if rest:
-        rows = [_qcoords(conv, tau) for _, _, tau in rest]
-        d = max(len(r) for r in rows)
-        A = sp.Matrix([r + [0] * (d - len(r)) for r in rows]).T   # column i: the residue of rest[i]
-        Rr, piv = A.rref()                                        # A[:, i] = sum_j Rr[j, i] A[:, piv[j]]
-        for j, k in enumerate(piv):
-            N = sp.ilcm(1, *[z.q for z in Rr.row(j)])
-            ns = [int(N * Rr[j, i]) for i in range(len(rest))]
+        for beta, ns in _qbasis_divisors(conv, [tau for _, _, tau in rest]):
             terms = [(P, n) for (_, P, _), n in zip(rest, ns) if n]
             got = realise(terms)
             if got is None:
                 return None
-            beta = rest[k][2] / N
             out.append((beta / got[0], got[1]))
             if verbose:
                 dv = ' + '.join(f"{n}*({pt[1]}, {pt[2]})" for (pt, _, _), n in zip(rest, ns) if n)
                 print(f"      torsion: the divisor {dv} - ({sum(ns)}) oo has order {got[0]}; "
                       f"logand with coefficient {beta / got[0]}")
     return out
+
+
+def _res_inf(T, f, g):
+    """The residues of the differential f dg at the two places over g = oo of an
+    even-degree model y^2 = q(g) (gens = [g], Dg = 1), as constants [r_+, r_-]: with
+    u = 1/g, y = +-sqrt(q(1/u) u^d)/u^(d/2) on the two sheets and f dg = -f(1/u) du/u^2,
+    the residue is minus the coefficient of u in the Laurent expansion of f(1/u)."""
+    q = T.q
+    d = sp.degree(q, g)
+    a, b = T._pad(f)[:2]
+    uu = sp.Dummy('u')
+    qs = sp.expand(q.subs(g, 1 / uu) * uu ** d)
+    out = []
+    for sg in (1, -1):
+        expr = sp.together(a.subs(g, 1 / uu) + sg * b.subs(g, 1 / uu) * sp.sqrt(qs) / uu ** (d // 2))
+        ser = sp.expand(sp.series(expr, uu, 0, 2).removeO())
+        out.append(-ser.coeff(uu, 1))
+    return out
+
+
+def _res_inf_all(T, f, g):
+    """The residues of the differential f dg at the places over g = oo of the curve
+    y^m = q(g) (gens = [g]).  At a place of ramification e, g = tau^-e and
+    f dg = -e tau^(-e-1) f(tau) dtau, so the residue is -e times the coefficient of tau^e
+    in the expansion of f there (sheets and places as in _v_inf: y = w tau^-dp qs^(1/m)
+    with w = zeta_m^j, j < s).  None when the expansion is not available (several places
+    and zeta_m not a radical, m not dividing 12)."""
+    q, m = T.q, T.m
+    f = T._pad(f)
+    d = sp.degree(q, g)
+    s_ = sp.igcd(m, d)
+    e_, dp = m // s_, d // s_
+    if s_ > 1 and 12 % m:
+        return None
+    tau, w = sp.Dummy('tau'), sp.Dummy('w')
+    qs = sp.expand(q.subs(g, 1 / tau ** e_) * tau ** (d * e_))
+    expr = sum(f[i].subs(g, 1 / tau ** e_) * w ** i * tau ** (-i * dp) * qs ** sp.Rational(i, m) / T.E[i].subs(g, 1 / tau ** e_)
+               for i in range(m) if f[i] != 0)
+    out = []
+    for j in range(s_):
+        zj = sp.expand_complex(sp.exp(2 * sp.pi * sp.I * j / m))
+        ser = sp.expand(sp.series(sp.together(expr.subs(w, zj)), tau, 0, e_ + 1).removeO())
+        out.append(sp.radsimp(-e_ * ser.coeff(tau, e_)))
+    return out
+
+
+def _second_kind_at_infinity(T, rem):
+    """The residual of a single-generator curve tower (D = d/dg) has zero residue at every
+    place over g = oo.  With zero residues at the finite places as well
+    (_verified_residue_free), an elementary integral would have no logarithmic part at
+    all (its log coefficients would be the residues), so the ansatz for the algebraic
+    part with proved bounds decides: the unit group at infinity need not be known."""
+    if len(T.gens) != 1 or T.q is None:
+        return False
+    dg = T.derivs[0]
+    if not (dg[0] == 1 and all(c == 0 for c in dg[1:])):
+        return False
+    rr = _res_inf_all(T, rem, T.gens[0])
+    return rr is not None and all(sp.simplify(r) == 0 for r in rr)
+
+
+def _inf_divisor_data(T, f, det_logs, g):
+    """What the mod-p certificate needs at the places over g = oo.  Proposition 9.4
+    completes the finite part of a residue-divisor component symmetrically at the two
+    places over g = oo of an even-degree model (a root of q is moved to infinity mod p,
+    and 2 R ~ oo_+ + oo_-); that is the true completion of a component exactly when its
+    coordinates at oo_+ and oo_- agree, the coordinate at oo_+- being the residue r_+- of
+    f dx there minus sum_i c_i ord_{oo_+-}(u_i) over the logands u_i already split off
+    with coefficients c_i.  Returns None when no condition is needed (an odd-degree
+    model: one place at infinity, the degree-0 completion is unique), 'unknown' when
+    r_+- cannot be computed (several generators and a pole of f dx at infinity), else
+    (r_+, r_-, [(c_i, ord_+(u_i), ord_-(u_i)), ...])."""
+    if sp.degree(T.q, g) % 2:
+        return None
+    dg = T.derivs[T.gens.index(g)]
+    if len(T.gens) == 1 and dg[0] != 0 and all(c == 0 for c in dg[1:]):
+        rr = _res_inf(T, tuple(sp.cancel(c / dg[0]) for c in T._pad(f)), g)      # f dx = (f/Dg) dg (Lemma 3.4)
+    else:
+        vals, exact = _v_inf(T, f, g)
+        vD, exactD = _v_inf(T, dg, g)                # dx = dg/Dg: v_P(f dx) = v_P(f) - 2 - v_P(Dg); no pole, no residue
+        if exact and exactD and len(vals) == 2 and len(vD) == 2 \
+           and all(w != sp.oo and (v == sp.oo or v - 2 - w >= 0) for v, w in zip(vals, vD)):
+            rr = [sp.S(0), sp.S(0)]
+        else:
+            return 'unknown'
+    orders = []
+    for c, u in det_logs:
+        vu, ex = _v_inf(T, u, g)
+        if not ex or len(vu) != 2 or any(v == sp.oo for v in vu):
+            return 'unknown'
+        orders.append((c, vu[0], vu[1]))
+    return rr[0], rr[1], orders
+
+
+def _nontorsion_divisor(T, pending, verbose=False, infd=None):
+    """Proposition 9.4 for the residue divisor that Algorithm 3(a)-(d) leaves
+    unrealised (pending = [(p, pts, taus)] on y^2 = q with constant
+    coordinates): each component over a Q-basis of the residues
+    (_qbasis_divisors) is reduced modulo good primes and the orders of its
+    class in the Jacobians compared (pell.nontorsion_divisor_certificate).
+    Returns (data, divisor) for the first component certified non-torsion,
+    the integral then being non-elementary by Corollary 7.6; else None."""
+    g, q = pending[0][1][0][0], T.q
+    if not q.free_symbols <= {g} or any(pts[0][0] != g for _, pts, _ in pending):
+        return None
+    places = [(pt, tau) for _, pts, taus in pending for pt, tau in zip(pts, taus) if tau != 0]
+    consts = [sp.sympify(z) for pt, tau in places for z in (pt[1], pt[2], tau)]
+    taus = [tau for _, tau in places]
+    nfin = len(taus)
+    # the residues at the two places over infinity and the coefficients of the logands
+    # already split off join the residues in the Q-basis decomposition (_inf_divisor_data)
+    extra = [] if infd is None else [sp.sympify(infd[0]), sp.sympify(infd[1])] + [sp.sympify(c) for c, _, _ in infd[2]]
+    consts += extra
+    if any(z.free_symbols for z in consts) or any(sp.sympify(c).free_symbols for c in sp.Poly(q, g).all_coeffs()):
+        return None
+    conv = _field_for(_alg_atoms(consts))
+    K = conv.K
+    mu = (sp.Poly(K.ext.minpoly).all_coeffs() if getattr(K, 'is_AlgebraicField', False)
+          else [1, 0, 1] if K == sp.QQ_I else None)
+    for beta, row in _qbasis_divisors(conv, taus + extra):
+        ns = row[:nfin]
+        if not any(ns):
+            continue                                     # a component supported at infinity only
+        if infd is not None:
+            cplus = row[nfin] - sum(row[nfin + 2 + k] * o for k, (_, o, _) in enumerate(infd[2]))
+            cminus = row[nfin + 1] - sum(row[nfin + 2 + k] * o for k, (_, _, o) in enumerate(infd[2]))
+            if cplus != cminus:
+                if verbose:
+                    print(f"  mod-p certificate withheld for the component with coefficient {beta}: its completion "
+                          f"at the places over {g} = oo is {cplus} oo_+ + {cminus} oo_-, not symmetric")
+                continue
+        pl = [((_qcoords(conv, pt[1]), _qcoords(conv, pt[2])), n) for (pt, _), n in zip(places, ns) if n]
+        cert, data = nontorsion_divisor_certificate(q, g, pl, mu)
+        if cert:
+            dv = ' + '.join(f"{n}*({pt[1]}, {pt[2]})" for (pt, _), n in zip(places, ns) if n)
+            if verbose:
+                print(f"  the residue divisor {dv} (coefficient {beta}) is certified "
+                      f"non-torsion by reduction mod p: {data}")
+            return data, dv
+    return None
 
 
 # ------------------------------------------ residues in the residue field
@@ -2185,9 +2373,36 @@ def _realise_at_points(T, p, pts, taus, verbose=False):
     return out
 
 
+def _trans_consts(exprs, gens):
+    """the transcendental constants of the coefficient field: the symbols that are not
+    generators (parameters a, b, ...), pi, E, and constant function values (log 2)"""
+    out = set()
+    for e in exprs:
+        e = sp.sympify(e)
+        out |= e.free_symbols - set(gens)
+        out |= {a for a in e.atoms(sp.NumberSymbol)}
+        out |= {a for a in e.atoms(sp.Function) if not a.free_symbols and not isinstance(a, sp.LambertW)}
+    return out
+
+
 def parallel_integrate_mixed(f, T, bounds=None, extension=None, verbose=False,
                              split_specials=False, special_exp=0, model_changed=False,
                              split_first=False):
+    """The pair-form entry point.  No non-elementarity certificate is issued when the
+    coefficient field has transcendental constants (parameters, pi, e, log 2): the unit
+    and S'-unit searches are complete over a number field only."""
+    exprs = list(f) + [c for d in T.derivs for c in d] + ([T.q] if T.q is not None else [])
+    trans = _trans_consts(exprs, T.gens)
+    r = _parallel_integrate_mixed(f, T, bounds, extension, verbose, split_specials, special_exp,
+                                  model_changed, split_first)
+    if trans and isinstance(r, tuple) and r[0] == 'not elementary':
+        return ('failed', 'certificate withheld: transcendental constants in the coefficient field', sorted(trans, key=str), r)
+    return r
+
+
+def _parallel_integrate_mixed(f, T, bounds=None, extension=None, verbose=False,
+                              split_specials=False, special_exp=0, model_changed=False,
+                              split_first=False):
     """Retry sequence (each a guessed input or a change of model):
        1. the base run with the tower specials over Q (and the exponent retries
           inside _pim);
@@ -2221,13 +2436,31 @@ def parallel_integrate_mixed(f, T, bounds=None, extension=None, verbose=False,
     is_conic = T.m == 2 and const_q and sp.degree(T.q, gq[0]) == 2
     is_quartic = (T.m == 2 and const_q and sp.degree(T.q, gq[0]) == 4
                   and sp.sqrt(sp.LC(T.q, gq[0])).is_rational)    # two rational places at infinity
+    # a conic radicand whose integrand has a pole prime of degree >= 2 in the curve
+    # variable is parametrised away FIRST (through a rational point, else a point over a
+    # quadratic field): the places over such a prime carry residues in nested radicals,
+    # while the parametrised tower is transcendental over the constants; with rational
+    # poles only the curve is analysed as in Part I (the flagship traces of Section 10)
+    if is_conic and not model_changed and bounds is None and _alg_poles(f, gq[0]):
+        res = conic_to_line(T, f)
+        if res is not None:
+            T2, f2, back, rational = res
+            if verbose:
+                print(f"  conic radicand: parametrised by {back[0][0]} = {back[0][1]}; "
+                      f"the tower is now transcendental over Q({back[0][0]})")
+            r2 = parallel_integrate_mixed(f2, T2, bounds=None, extension=extension, verbose=verbose,
+                                          model_changed=True)
+            if isinstance(r2, sp.Basic):
+                return r2.subs(back)
+            if r2[0] == "not elementary" and rational:      # a certificate over Q(w) only: the arithmetic over a quadratic field is not certified
+                return r2
     r = _pim(f, T, bounds, extension, verbose, split_specials, special_exp, model_changed,
              allow_split=split_first or not (is_conic and not model_changed))
     if not model_changed and failed(r) and bounds is None:
         if is_conic:
-            res = conic_to_line(T, f)
+            res = conic_to_line(T, f) if not _alg_poles(f, gq[0]) else None
             if res is not None:
-                T2, f2, back = res
+                T2, f2, back, rational = res
                 if verbose:
                     print(f"  conic radicand: parametrised by {back[0][0]} = {back[0][1]}; "
                           f"the tower is now transcendental over Q({back[0][0]})")
@@ -2235,7 +2468,7 @@ def parallel_integrate_mixed(f, T, bounds=None, extension=None, verbose=False,
                                               model_changed=True)
                 if isinstance(r2, sp.Basic):
                     return r2.subs(back)
-                if r2[0] == "not elementary":
+                if r2[0] == "not elementary" and rational:
                     return r2
             # no rational point, or the parametrised run failed: allow the split now
             r = _pim(f, T, bounds, extension, verbose, split_specials, special_exp, model_changed,
@@ -2293,6 +2526,7 @@ class _Analysis:
                         if sum(rd.values()) == P.degree():
                             for r, m_ in rd.items():
                                 new_logs.append((g - r, sp.S(0)))
+                                self.__dict__.setdefault('_parent', {})[g - r] = pp
                             done_split = True
                         break
                 if not done_split:
@@ -2419,16 +2653,15 @@ def _analyse(f, T, extension=None, verbose=False):
         e_P = m if branch else 1
         vP = _vP(f, p, T, branch)
         if special:
-            denv *= p ** mult
             unk_logs.append((p, sp.S(0)))
             if verbose:
-                print(f"  ({p}): special; s-part {p}**{mult}, "
-                      f"candidate log({p})")
+                print(f"  ({p}): special (multiplicity {mult}); candidate log({p})")
             continue
         if verbose:
             print(f"  ({p}): {'branch' if branch else 'unramified'}, "
                   f"delta = {delta}, v_P(f) = {vP}"
                   + ("  [sub-critical]" if vP > -delta else ""))
+        tau_hi = None        # canonical residue of a deeper pole over a constant-coefficient prime
         if vP < -delta:
             denv *= p ** sp.ceiling(sp.Rational(-vP - delta, e_P))
             if q is None and not branch:
@@ -2442,12 +2675,15 @@ def _analyse(f, T, extension=None, verbose=False):
                 if tau is not None and not _iszero(tau):
                     if verbose:
                         print(f"      canonical residue at order {-vP}: {tau}")
-                    cv = _certify_nonconstant(tau, gens)
-                    if cv is True:
-                        return ("not elementary", p, tau)
-                    if cv is None:
-                        return ("failed", "residue constancy undecided", p, tau)
-                    det_logs.append((tau, T.scalar(p)))     # log(p), coefficient tau
+                    if _const_dir(T, p) is not None:
+                        tau_hi = tau    # kappa(P) is algebraic over F: the residues at the places over p, below
+                    else:
+                        cv = _certify_nonconstant(tau, gens)
+                        if cv is True:
+                            return ("not elementary", p, tau)
+                        if cv is None:
+                            return ("failed", "residue constancy undecided", p, tau)
+                        det_logs.append((tau, T.scalar(p)))     # log(p), coefficient tau
             elif delta == 1 and not branch:
                 pts = _points_over(T, p)
                 if pts and q is not None and len(gens) == 1 and T.derivs[0] == T.unit(0):
@@ -2474,14 +2710,34 @@ def _analyse(f, T, extension=None, verbose=False):
                         torsion.append((p, pts, taus))
                     else:
                         det_logs.extend(got)
-        if vP == -delta:
-            # tau_P = e * (f h / Dh)|_P  with h = p
-            Dp = T.D(T.scalar(p))
-            tp = T.div(_pscale(e_P * p, f), Dp) if q is not None else \
-                 (sp.cancel(e_P * p * f[0] / Dp[0]), sp.S(0))
-            texpr = T.to_Y(tp, Y)
+        if branch and vP <= -delta and m == 2:      # a critical or deeper pole; a sub-critical one has f0 regular
+            # a branch place P over p (m = 2): with x - x0 = tau^2 the coordinate f0 has
+            # even powers of tau, y and dx odd ones, so f dx has residue 2 res_p(f0) at P
+            # and f1 y contributes nothing: the logarithmic part at p is that of the
+            # rational function f0, log(x - x_i) with coefficient res_{x_i}(f0) (Trager)
+            if any(any(c != 0 for c in d[1:]) for d in T.derivs):
+                return ("failed", "critical pole at a branch place with a derivative through y", p)
+            T0 = Tower(gens, [(d[0], sp.S(0)) for d in T.derivs], q=None)
+            Dp0 = T0.D(T0.scalar(p))[0]
+            rc = _residue_classes(T0, p, (sp.cancel(f[0] * p / Dp0), sp.S(0)), Y, verbose)
+            if rc is None:
+                return ("failed", "residue at a branch place: no constant-coefficient direction", p)
+            if isinstance(rc, tuple) and isinstance(rc[0], str):
+                return rc
+            for cval, pc2 in rc[2]:
+                det_logs.append((cval, T.scalar(pc2)))
+            continue
+        if vP == -delta or tau_hi is not None:
+            # tau_P = e * (f h / Dh)|_P  with h = p, or the canonical residue of the deeper pole
+            if tau_hi is not None:
+                tp, texpr = (tau_hi, sp.S(0)), tau_hi
+            else:
+                Dp = T.D(T.scalar(p))
+                tp = T.div(_pscale(e_P * p, f), Dp) if q is not None else \
+                     (sp.cancel(e_P * p * f[0] / Dp[0]), sp.S(0))
+                texpr = T.to_Y(tp, Y)
             if branch:
-                raise NotImplementedError("critical branch residue")
+                return ("failed", "critical pole at a branch place of a radical of degree", m, p)   # m >= 3: left to the ansatz
             pts = _points_over(T, p)
             # a prime of degree > 4, and every constant-coefficient prime when
             # m >= 3: residues in the residue field K[g]/(p) (no roots), the
@@ -2610,6 +2866,17 @@ def _analyse(f, T, extension=None, verbose=False):
         if got is not None:
             det_logs.extend(got)
             torsion = []
+        else:
+            # ... or not realisable at all: a component of the divisor that is
+            # provably non-torsion (Proposition 9.4 by reduction mod p) is a
+            # certificate of non-elementarity (Corollary 7.6)
+            g_ = [gg for gg in T.gens if gg in T.q.free_symbols][0]
+            infd = _inf_divisor_data(T, f, det_logs, g_)
+            if infd == 'unknown' and verbose:
+                print("  mod-p certificate withheld: the residues of f dx at the places over infinity are not available")
+            cert = None if infd == 'unknown' else _nontorsion_divisor(T, torsion, verbose, infd)
+            if cert is not None:
+                return ("not elementary", "residue divisor not torsion: reduction mod p", *cert)
     if torsion:
         return ("needs torsion realisation (Parts I--II, milestone iii)",
                 [(p, taus) for p, _, taus in torsion])
@@ -2689,33 +2956,410 @@ def _analyse(f, T, extension=None, verbose=False):
     return _Analysis(T, f, Y, det_logs, unk_logs, denv, units, units_complete, rem, verbose)
 
 
-def _solve_stage(A, split, special_exp, bounds, verbose):
+# ------------------------------------------- bounds at the places (S8.2)
+
+def _ord_inf(e, g):
+    """v_oo(e) = deg_g(den) - deg_g(num) of a rational function; oo for 0."""
+    e = _c(e)
+    if e == 0:
+        return sp.oo
+    n, d = sp.fraction(e)
+    return sp.degree(d, g) - sp.degree(n, g)
+
+
+def _lc_inf(e, g):
+    """leading coefficient at g = oo (a function of the other generators)"""
+    n, d = sp.fraction(_c(e))
+    return _c(sp.LC(sp.Poly(n, g)) / sp.LC(sp.Poly(d, g)))
+
+
+def _v_inf(T, u, g):
+    """Valuations of the tuple u at the places over g = oo, one entry per
+    place in the units of its uniformiser, and whether they are exact.  For
+    m <= 2 exact (a series at the two unramified places when the two
+    coordinates could cancel); for m >= 3 with g in q the Gauss lower bound
+    of Part I, S6.1."""
+    q, m = T.q, T.m
+    u = T._pad(u)
+    if q is None or g not in q.free_symbols:
+        return [min(_ord_inf(c, g) for c in u)], True
+    d = sp.degree(q, g)
+    if m >= 3:
+        s_ = sp.igcd(m, d)
+        e_, dp = m // s_, d // s_
+        # the s places over g = oo have ramification e and ord(y) = -dp; term i of u on
+        # the Trager basis has valuation e ord_oo(u_i) - i dp + e deg E_i (the Gauss bound
+        # of Part I, S6.1), exact at every place when the minimal term is unique.
+        # Otherwise the expansion at the place: g = tau^-e, y = w tau^-dp qs(tau)^(1/m)
+        # with qs = q(tau^-e) tau^(d e) a unit at 0 and w^m = 1; the s places are the
+        # classes w = zeta_m^j, j < s, of the m sheets under tau -> zeta_e tau.  Exact
+        # when zeta_m is a radical (m | 12), else the lower bound.
+        vals = [e_ * _ord_inf(u[i], g) - (i * dp - e_ * (sp.degree(T.E[i], g) if T.E[i] != 1 else 0))
+                for i in range(m) if u[i] != 0]
+        if not vals:
+            return [sp.oo] * s_, True
+        lo = min(vals)
+        if vals.count(lo) == 1:
+            return [lo] * s_, True
+        if 12 % m:
+            return [lo] * s_, False
+        tau, w = sp.Dummy('tau'), sp.Dummy('w')
+        qs = sp.expand(q.subs(g, 1 / tau ** e_) * tau ** (d * e_))
+        expr = sum(u[i].subs(g, 1 / tau ** e_) * w ** i * tau ** (-i * dp) * qs ** sp.Rational(i, m) / T.E[i].subs(g, 1 / tau ** e_)
+                   for i in range(m) if u[i] != 0)
+        out = []
+        for j in range(s_):
+            zj = sp.expand_complex(sp.exp(2 * sp.pi * sp.I * j / m))
+            ej = sp.together(expr.subs(w, zj))
+            for order in (int(lo) + 4, int(lo) + 12, int(lo) + 30):
+                ser = sp.expand(sp.series(ej, tau, 0, order).removeO())
+                if ser != 0:
+                    out.append(min(t_.as_coeff_exponent(tau)[1] for t_ in sp.Add.make_args(ser)))
+                    break
+            else:
+                out.append(sp.oo)
+        return out, True
+    a, b = u[0], u[1]
+    va, vb = _ord_inf(a, g), _ord_inf(b, g)
+    if d % 2 == 1:
+        return [min(2 * va, 2 * vb - d)], True            # ramified: parities differ
+    vy = -sp.Rational(d, 2)
+    if a == 0 or b == 0 or va != vb + vy:
+        return [min(va, vb + vy)] * 2, True
+    uu = sp.Dummy('u')
+    qs = sp.expand(q.subs(g, 1 / uu) * uu ** d)             # q(1/u) u^d, a unit at u = 0
+    out = []
+    for sg in (1, -1):
+        expr = sp.together(a.subs(g, 1 / uu) + sg * b.subs(g, 1 / uu) * sp.sqrt(qs) / uu ** (d // 2))
+        for order in (int(va) + 4, int(va) + 12, int(va) + 30):
+            ser = sp.expand(sp.series(expr, uu, 0, order).removeO())
+            if ser != 0:
+                out.append(min(t_.as_coeff_exponent(uu)[1] for t_ in sp.Add.make_args(ser)))
+                break
+        else:
+            out.append(sp.oo)
+    return out, True
+
+
+def _kind(T, k):
+    """'prim', 'exp' or 'tan' if t_k is a primitive, hyperexponential or
+    hypertangent monomial over the field below it, else 'other'."""
+    g = T.gens[k]
+    above = set(T.gens[k:])
+    for kd, div in (('prim', 1), ('exp', g), ('tan', 1 + g ** 2)):
+        if all(_c(c / div).free_symbols.isdisjoint(above) for c in T.derivs[k]):
+            return kd
+    return 'other'
+
+
+def _independent(T, i):
+    """no other generator's derivative, nor q, involves t_i"""
+    g = T.gens[i]
+    if T.q is not None and g in T.q.free_symbols:
+        return False
+    return not any(sp.sympify(c).has(g) for k, d in enumerate(T.derivs) if k != i for c in d)
+
+
+def _lc_place(T, u, g):
+    """The leading coefficients of the tuple u at the places over g = oo, one
+    per place as in _v_inf, or None where the implementation does not read
+    them (m >= 3, a ramified place, a coordinate carrying y off the curve
+    variable)."""
+    q, m = T.q, T.m
+    u = T._pad(u)
+    if q is None or g not in q.free_symbols:
+        if u[0] == 0 or any(c != 0 for c in u[1:]):
+            return None
+        return [_lc_inf(u[0], g)]
+    d = sp.degree(q, g)
+    a, b = u[0], u[1]
+    if m >= 3 or d % 2 == 1 or (a == 0 and b == 0):
+        return None
+    memo = T.__dict__.setdefault('_lcp', {})           # the same series serve both places
+    if (u, g) in memo:
+        return memo[u, g]
+    va = min(_ord_inf(a, g), _ord_inf(b, g) - sp.Rational(d, 2))
+    uu = sp.Dummy('u')
+    qs = sp.expand(q.subs(g, 1 / uu) * uu ** d)
+    out = []
+    for sg in (1, -1):
+        expr = sp.together(a.subs(g, 1 / uu) + sg * b.subs(g, 1 / uu) * sp.sqrt(qs) / uu ** (d // 2))
+        for order in (int(va) + 4, int(va) + 12, int(va) + 30):
+            ser = sp.expand(sp.series(expr, uu, 0, order).removeO())
+            if ser != 0:
+                k = min(t_.as_coeff_exponent(uu)[1] for t_ in sp.Add.make_args(ser))
+                out.append(_c(ser.coeff(uu, k)))
+                break
+        else:
+            return None
+    memo[u, g] = out
+    return out
+
+
+def _class_mod(e, pp, g, n, gens):
+    """The class of e / pp^n modulo the prime pp of F[g] when it is a constant
+    of Fbar (a number), else None."""
+    try:
+        num, den = sp.fraction(_c(e / pp ** n))
+        cls = _c(sp.rem(sp.expand(num * sp.invert(den, pp, g)), pp, g))
+    except Exception:
+        return None
+    return cls if cls.free_symbols.isdisjoint(gens) else None
+
+
+def _in_qspan(rho, mus):
+    """rho lies in the Q-span of the algebraic numbers mus: the kernel-degree
+    test of the extended (K1), N_v = {a : -a rho in sum_k Z mu_k}.  True on
+    any failure, which leaves the place to the guess."""
+    if not mus:
+        return False
+    try:
+        from sympy.polys.numberfields import primitive_element
+        _, _, reps = primitive_element([sp.sympify(rho)] + [sp.sympify(m_) for m_ in mus], ex=True)
+        n = max(len(r_) for r_ in reps)
+        M = sp.Matrix([[sp.Rational(int(c.numerator), int(c.denominator)) for c in r_]
+                       + [0] * (n - len(r_)) for r_ in reps])
+        return M.rank() == M[1:, :].rank()
+    except Exception:
+        return True
+
+
+def _decide(T, own, mono, s, shifts, sig_pi, lam, rho_free, rho_r, consts=None):
+    """Algorithm 6, Step 3: the criterion (K1)-(K4) of Proposition 8.11 that
+    proves the bound at the place, or None.  own: the generators of the
+    place; mono: the index of the monomial the place belongs to (oo_i, (t_i),
+    (t_i -+ I)) or None; shifts: generator -> shift; lam: generator -> the
+    symbols of its leading coefficient; rho_free: the leading coefficient of
+    D pi is free of the attaining generators; rho_r: that coefficient when
+    kappa = F(x) (K3), else None; consts(names): the values at the place of
+    rho ('pi') and of the mu_k of the named hyperexponential generators, for
+    (K1) with attaining hyperexponentials (Remark 8.14)."""
+    gens = T.gens
+    r = sig_pi - s
+    A = [gk for gk in gens if shifts.get(gk) == s and gk not in own]
+    kinds = {gk: _kind(T, gens.index(gk)) for gk in A}
+    if mono is not None and _kind(T, mono) != 'other' and _independent(T, mono):
+        return 'K2'
+    if r == 0 and rho_free and all(kd in ('prim', 'exp') and lam[gk].isdisjoint(A) for gk, kd in kinds.items()):
+        exps = [gk for gk, kd in kinds.items() if kd == 'exp']
+        if not exps:
+            return 'K1'
+        vals = consts(['pi'] + exps) if consts is not None else None
+        if (vals is not None and all(v_ is not None and not v_.free_symbols for v_ in vals.values())
+                and not _in_qspan(vals['pi'], [vals[gk] for gk in exps])):
+            return 'K1'
+    if r >= 1 and rho_r is not None:
+        x = gens[0]
+        R = _ratint(_c(rho_r), x)
+        if R.has(sp.log) or R.has(sp.atan):
+            return 'K3'
+    upper = [gk for gk in gens if gk not in own]
+    # (K4) at a place whose own residue field is Fbar: a place of the curve, or x = oo of
+    # the base F(x) with Dx = 1 (the same proof: kappa_v is a hyperexponential/hypertangent
+    # tower over Fbar, and rho_v^(r) in Fbar* is not a derivative there)
+    base_place = (set(own) == {gens[0]} and sp.sympify(T.derivs[0][0]).free_symbols.isdisjoint(set(gens[1:]))
+                  and all(c == 0 for c in T.derivs[0][1:]))          # the base F(g), whatever Dg in F(g)
+    if (r >= 1 and rho_free and own and (T.q is not None or base_place) and upper and all(gk in A for gk in upper)
+            and all(kinds[gk] in ('exp', 'tan') for gk in upper)
+            and all(not lam[gk] for gk in upper)
+            and sum(1 for gk in upper if kinds[gk] == 'exp') <= 1):
+        return 'K4'
+    return None
+
+
+def _lam_syms(T, k, own, g=None):
+    """the symbols of the leading coefficient of D t_k (of D t_k / t_k, of
+    D t_k / (1 + t_k^2) for a hyperexponential, hypertangent t_k) other than
+    those of the place, which reduce to constants there; at g = oo the
+    leading coefficient in g, at an affine prime the whole coefficient"""
+    gk = T.gens[k]
+    div = {'prim': 1, 'exp': gk, 'tan': 1 + gk ** 2, 'other': 1}[_kind(T, k)]
+    comps = [_c(c / div) for c in T.derivs[k] if c != 0]
+    if g is not None:
+        comps = [_lc_inf(c, g) for c in comps]
+    return set().union(*[c.free_symbols for c in comps]) - own if comps else set()
+
+
+def _inf_data(A):
+    """Algorithm 6 at the places over t_i = oo for every generator, computed
+    once per analysis: per generator (criterion or None, e_P, the list of
+    (s, r, v_P(rem)) over the places, chain-possible)."""
+    if getattr(A, '_inf', None) is not None:
+        return A._inf
+    T, rem = A.T, A.rem
+    gens, q, m = T.gens, T.q, T.m
+    curve = {g for g in gens if q is not None and g in q.free_symbols}
+    out = []
+    for i, g in enumerate(gens):
+        own = {g} | (curve if g in curve else set())
+        items = [(gk, _v_inf(T, T.derivs[k], g), _v_inf(T, T.scalar(gk), g)[0]) for k, gk in enumerate(gens)]
+        if q is not None:
+            items.append(('y', _v_inf(T, T.Dw[1], g), _v_inf(T, T.unit(1), g)[0]))
+        exact = all(ex for _, (_, ex), _ in items)
+        vrem, _ = _v_inf(T, rem, g)
+        d = sp.degree(q, g) if g in curve else 0
+        e_P = 1 if g not in curve else (2 if (m == 2 and d % 2 == 1) else (1 if m == 2 else m // sp.igcd(m, d)))
+        lam = {gk: _lam_syms(T, k, own, g) for k, gk in enumerate(gens)}
+        rho_syms = set().union(*[_lc_inf(c, g).free_symbols for c in T.derivs[i] if c != 0]) - own
+        rho_r = -_lc_inf(T.derivs[1][0], g) if (q is None and len(gens) == 2 and i == 1 and T.derivs[0][0] == 1) else None
+        crit, places, chain = None, [], False
+        for pl in range(len(vrem)):
+            shifts = {nm: vD[pl] - vg[pl] for nm, (vD, _), vg in items if vD[pl] is not sp.oo}
+            s = min(shifts.values())
+            r = shifts[g] - s
+            A_ = [gk for gk in gens if shifts.get(gk) == s and gk not in own]
+            consts = lambda names, pl=pl: _inf_consts(T, g, pl, names)
+            c_ = _decide(T, own, i, s, shifts, shifts[g], lam, rho_syms.isdisjoint(A_), rho_r, consts) if exact else None
+            if c_ is None:
+                crit = None
+                chain = r >= 1 and any(_kind(T, gens.index(gk)) == 'prim' for gk in A_)
+                break
+            crit = c_ if crit is None else crit
+            places.append((s, r, vrem[pl]))
+        out.append((crit, e_P, places, chain))
+    A._inf = out
+    return out
+
+
+def _special_data(A, pp):
+    """Algorithm 6 at the places over the special pp: (criterion or None,
+    s, r, e_P, branch); the derivatives being defined over F, a factor split
+    off a constant-coefficient special shares the data of its parent."""
+    cache = A.__dict__.setdefault('_spec', {})
+    if pp in cache:
+        return cache[pp]
+    T = A.T
+    gens, q, m = T.gens, T.q, T.m
+    parent = getattr(A, '_parent', {}).get(pp)
+    if parent is not None:
+        cache[pp] = _special_data(A, parent)
+        return cache[pp]
+    branch = q is not None and _vp(q, pp, gens) > 0
+    own = {gk for gk in gens if pp.has(gk)}
+    def vp(u):
+        return _vP(u, pp, T, branch)
+    shifts, exact = {}, not branch
+    for k, gk in enumerate(gens):
+        vD = vp(T.derivs[k])
+        if vD is not sp.oo:
+            shifts[gk] = vD - vp(T.scalar(gk))
+        dk = T.derivs[k]
+        if q is not None and dk[0] != 0 and dk[1] != 0 and _vp(dk[0], pp, gens) == _vp(dk[1], pp, gens):
+            exact = False                       # the two coordinates could cancel on one sheet
+    if q is not None:
+        vD = vp(T.Dw[1])
+        if vD is not sp.oo:
+            shifts['y'] = vD - vp(T.unit(1))
+    pi = T.unit(1) if branch else T.scalar(pp)
+    Dpi = T.D(pi)
+    sig_pi = vp(Dpi) - vp(pi)
+    s = min(list(shifts.values()) + [sig_pi])
+    A_ = [gk for gk in gens if shifts.get(gk) == s and gk not in own]
+    lam = {gk: _lam_syms(T, k, own) for k, gk in enumerate(gens)}
+    rho_free = (not branch) and set().union(*[_c(c).free_symbols for c in Dpi if c != 0]).isdisjoint(A_)
+    mono = None
+    if len(own) == 1:
+        i = gens.index(next(iter(own)))
+        kd = _kind(T, i)
+        if (kd == 'exp' and sp.expand(pp - gens[i]) == 0) or (kd == 'tan' and sp.expand((pp - gens[i]) ** 2 + 1) == 0):
+            mono = i
+    consts = (lambda names: _special_consts(T, pp, Dpi, s, next(iter(own)), names)) \
+        if not branch and len(own) == 1 else None
+    crit = _decide(T, own, mono, s, shifts, sig_pi, lam, rho_free, None, consts) if exact else None
+    cache[pp] = (crit, s, sig_pi - s, m if branch else 1, branch)
+    return cache[pp]
+
+
+def _inf_consts(T, g, pl, names):
+    """rho ('pi', the coefficient of pi^(s+1) in D pi = -D g pi^2) and the
+    mu_k of the named hyperexponential generators at the pl-th place over
+    g = oo, as numbers where _lc_place reads them, else None."""
+    gens = T.gens
+    out = {}
+    for nm in names:
+        if nm == 'pi':
+            u = tuple(-c for c in T.derivs[gens.index(g)])
+        else:
+            u = tuple(_c(c / nm) for c in T.derivs[gens.index(nm)])
+        lc = _lc_place(T, u, g)
+        out[nm] = lc[pl] if lc is not None and pl < len(lc) else None
+    return out
+
+
+def _special_consts(T, pp, Dpi, s, g, names):
+    """The same at the places over the special pp = pi of F[g]: the classes
+    of D pi / pi^(s+1) and of (D t_k / t_k) / pi^s modulo pp, when they are
+    constants of Fbar, the same at every place over pp."""
+    gens = T.gens
+    out = {}
+    for nm in names:
+        u = Dpi if nm == 'pi' else tuple(_c(c / nm) for c in T.derivs[gens.index(nm)])
+        n = s + 1 if nm == 'pi' else s
+        cls = [_class_mod(c, pp, g, n, gens) if c != 0 else sp.S(0) for c in u]
+        out[nm] = cls[0] if cls[0] is not None and all(c == 0 for c in cls[1:]) else None
+    return out
+
+
+def _place_bounds(A, unk_logs, retry, verbose):
+    """Step 15 of Algorithm 4 by Algorithm 6: the exponent of every special
+    prime and the degree bound in every generator, from the shift of the
+    derivation at the places over sigma and over t_i = oo (Theorem 8.7,
+    Corollary 8.9); the classical guess, raised by the retry count, at the
+    places where Proposition 8.11 is silent.  Returns (bounds, exps, proved)."""
+    T, rem = A.T, A.rem
+    gens, q = T.gens, T.q
+    nc = T.n if q is not None else 1
+    crits, exps = {}, {}
+    for pp, _ in unk_logs:
+        crit, s, r, e_P, branch = _special_data(A, pp)
+        parent = getattr(A, '_parent', {}).get(pp)
+        vg = _vP(rem, parent if parent is not None else pp, T, branch)    # a lower bound at the factor
+        exps[pp] = int(sp.ceiling(sp.Max(0, s - vg + r) / e_P)) if crit else int(max(0, -vg)) + retry
+        crits['s', pp] = crit
+    denv = A.denv
+    for pp, ex in exps.items():
+        denv *= pp ** ex
+    nb = [sp.Poly(sp.fraction(rem[i])[0], *gens) for i in range(nc)]
+    db = [sp.Poly(sp.fraction(rem[i])[1] * denv, *gens) for i in range(nc)]
+    bounds = [None] * len(gens)
+    for i in reversed(range(len(gens))):
+        g = gens[i]
+        crit, e_P, places, chain = _inf_data(A)[i]
+        if crit:
+            b = sp.degree(denv, g) + max(sp.ceiling((sp.Max(0, s - vg) + r) / e_P) for s, r, vg in places)
+        else:
+            b = max(P.degree(g) for P in nb + db) + 2
+            if chain:
+                b += max([bounds[k] for k in range(i + 1, len(gens))] + [0])
+        bounds[i] = int(b)
+        crits['g', g] = crit
+    proved = all(c is not None for c in crits.values())
+    if verbose:
+        print("  bounds: " + ", ".join(f"{g}: {b} [{crits['g', g] or 'guess'}]" for g, b in zip(gens, bounds))
+              + (";  specials: " + ", ".join(f"({pp})^{ex} [{crits['s', pp] or 'guess'}]" for pp, ex in exps.items()) if exps else "")
+              + ("  (all proved)" if proved else "  (a guess is in play)"))
+    return bounds, exps, proved
+
+
+def _solve_stage(A, split, retry, bounds, verbose):
     """Steps 15--20 of Algorithm 4 for one rung of the ladder: the special
-    s-part with the guessed exponent, the ansatz, the linear system
-    (Algorithm 5) and the integral.  Returns the integral, or
-    ('nosol', bounds) when the system has no solution."""
+    exponents and degree bounds (Algorithm 6, the guesses raised by the retry
+    count), the ansatz, the linear system (Algorithm 5) and the integral.
+    Returns the integral, or ('nosol', bounds, proved) when the system has no
+    solution, proved recording whether every bound in force was proved."""
     T, f, Y = A.T, A.f, A.Y
     gens, q, m = T.gens, T.q, T.m
     nc = T.n if q is not None else 1
     det_logs, denv, units, rem = A.det_logs, A.denv, A.units, A.rem
     unk_logs, special_units = A.specials(split)
-    # special s-part: the exponents of tower specials absent from the
-    # integrand's denominator are a guessed input (Remark 9.1); on failure
-    # the caller retries with special_exp = 1, 2
-    if special_exp:
-        # raised for every tower special, present in the denominator or not:
-        # the multiplicity of a special in D_v is not bounded by its
-        # multiplicity in the integrand (there is no valuation lemma there)
-        for pp, _ in unk_logs:
-            denv *= pp ** special_exp
-        if verbose:
-            print(f"  special s-part with exponent {special_exp}: D_v = {denv}")
-
-    # ansatz
+    proved = False
     if bounds is None:
-        nb = [sp.Poly(sp.fraction(rem[i])[0], *gens) for i in range(nc)]
-        db = [sp.Poly(sp.fraction(rem[i])[1] * denv, *gens) for i in range(nc)]
-        bounds = [max([P.degree(g) for P in nb + db]) + 2 for g in gens]
+        bounds, exps, proved = _place_bounds(A, unk_logs, retry, verbose)
+    else:                       # explicit bounds: the multiplicities in the residual, raised by the retry count
+        exps = {pp: int(max(0, -_vP(rem, pp, T, q is not None and _vp(q, pp, gens) > 0))) + retry
+                for pp, _ in unk_logs}
+    for pp, ex in exps.items():
+        denv *= pp ** ex
     prefixes = ['a_', 'b_'] if nc <= 2 else ['c%d_' % i for i in range(nc)]
     css = [[] for _ in range(nc)]
     monos, alphas = [], []
@@ -2770,7 +3414,7 @@ def _solve_stage(A, split, special_exp, bounds, verbose):
     if verbose:
         print(f"  linsolve: {_time.time() - _t0:.1f}s, {'no solution' if sub is None else 'solved'}")
     if sub is None:
-        return ('nosol', bounds)
+        return ('nosol', bounds, proved)
     if sysK is not None:
         rat = sysK.rational_part()                   # cancelled in K[gens]
     else:
@@ -2789,6 +3433,40 @@ def _solve_stage(A, split, special_exp, bounds, verbose):
                for g, (u, c) in zip(gammas, units))
          + sum(sub[b] * sp.log(s) for b, (s, _) in zip(betas, unk_logs)))
     return I
+
+
+def _verified_residue_free(rem, T, extension):
+    """Re-run the residue computation of Steps 7--13 on the residual: it is
+    verified residue-free when the analysis finds nothing left to realise
+    AND every deeper-than-critical pole at a normal prime is one the
+    analysis evaluates (Algorithm 2 needs explicit places, or a residue
+    direction in a transcendental tower); a pole it would pass over in
+    silence leaves the residual unverified."""
+    try:
+        A2 = _analyse(rem, T, extension, False)
+    except Exception:
+        return False
+    if not (isinstance(A2, _Analysis) and not A2.det_logs):
+        return False
+    gens, q = T.gens, T.q
+    nc = T.n if q is not None else 1
+    den = sp.S(1)
+    for c in rem[:nc]:
+        if c != 0:
+            den = sp.lcm(den, sp.fraction(_c(c))[1])
+    for P_, _ in sp.factor_list(sp.Poly(den, *gens))[1]:
+        p = P_.as_expr()
+        if not any(p.has(g) for g in gens):
+            continue
+        branch, eta, delta, special = _classify(T, p)
+        if special or _vP(rem, p, T, branch) >= -delta:
+            continue
+        if q is None:
+            if _residue_dir(T, p) is None:
+                return False
+        elif branch or delta != 1 or _points_over(T, p) is None:
+            return False
+    return True
 
 
 def _pim(f, T, bounds=None, extension=None, verbose=False,
@@ -2814,36 +3492,38 @@ def _pim(f, T, bounds=None, extension=None, verbose=False,
     r = _solve_stage(A, split_specials, special_exp, bounds, verbose)
     if not (isinstance(r, tuple) and r[0] == 'nosol'):
         return r
-    bounds = r[1]
+    _, bounds, proved = r
     f, Y, rem, units_complete = A.f, A.Y, A.rem, A.units_complete
     unk_logs = A.specials(split_specials)[0]
-    g0 = gens[0]
-    if (bounds_given is None and _HAVE_RN and q is not None and m == 2 and len(gens) == 1
-            and q.free_symbols <= {g0} and not unk_logs and units_complete
-            and T.derivs[0] == (sp.S(1), sp.S(0))
-            and _residue_free(T, rem, Y)):                  # realisation verified
-        # Part I, Cor. 7.4: exact bounds; if the system is still
-        # inconsistent, the residual is a non-exact second-kind
-        # differential (Part III: the holomorphic remainder)
-        Lf = RadicalField(q.subs(g0, _rn.x), 2)
-        frn = [sp.cancel(f[0].subs(g0, _rn.x)), sp.cancel(f[1].subs(g0, _rn.x))]
-        B, info = exact_degree_bounds(Lf, frn)
-        if verbose:
-            print(f"  retrying with the exact degree bounds of Part I: {B}")
-        r2 = _pim(f, T, bounds=[max(B)], verbose=False, model_changed=model_changed, analysis=A)
-        if isinstance(r2, tuple) and r2[0] == "failed":
+    splittable = any(sp.Poly(pp, g).degree() >= 2 for pp, _ in unk_logs for g in gens
+                     if sp.Poly(pp, g).degree() >= 0)
+    curve = {g for g in gens if q is not None and g in q.free_symbols}
+    typeE = any(q is not None and pp.free_symbols <= curve for pp, _ in unk_logs)
+    if (bounds_given is None and proved and not typeE
+            and not (splittable and allow_split)
+            and (units_complete or _second_kind_at_infinity(T, rem))):
+        # Proposition 9.2(b): every bound in force is proved, the logand
+        # candidates are complete (or no logand can occur: the residual has
+        # zero residue at every place over infinity too) -- the unit group is known, the special
+        # logands are irreducible over Fbar (split), and no special lies over
+        # the curve variable, where the S'-units are only searched within a
+        # bound -- and, once the residual is VERIFIED residue-free, the
+        # inconsistent system shows it to be a non-exact differential of the
+        # second kind (the holomorphic remainder)
+        if len(gens) == 1 and q is not None and m == 2 and T.derivs[0] == (sp.S(1), sp.S(0)):
+            ok = _residue_free(T, rem, Y)
+        else:
+            ok = _verified_residue_free(rem, T, extension)
+        if ok:
             return ("not elementary", "holomorphic remainder: residual "
                     "second-kind differential is not exact "
-                    "(exact bounds of Part I)", B)
-        return r2
-    if special_exp < 2 and bounds_given is None and unk_logs:
+                    "(every bound in force is proved)", bounds)
+    if special_exp < 2 and bounds_given is None and not proved:
         return _pim(f, T, bounds=None, extension=extension,
                     verbose=verbose, split_specials=split_specials,
                     special_exp=special_exp + 1, model_changed=model_changed,
                     allow_split=allow_split, analysis=A)
-    if allow_split and not split_specials and any(
-            sp.Poly(pp, g).degree() >= 2 for pp, _ in unk_logs for g in gens
-            if sp.Poly(pp, g).degree() >= 0):
+    if allow_split and not split_specials and splittable:
         return _pim(f, T, bounds=bounds_given, extension=extension,
                     verbose=verbose, split_specials=True, model_changed=model_changed,
                     allow_split=allow_split, analysis=A)
